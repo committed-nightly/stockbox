@@ -1,0 +1,179 @@
+name: CI
+
+'on':
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
+  box:
+    # The tests marked `box` read the runner's own files and skip themselves
+    # where a directory is absent, which keeps them honest on a laptop. On a
+    # runner there is nothing to skip, and a silent skip here would take the
+    # only tests against inputs we did not write out of the suite.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e ".[dev]"
+
+      - name: no box test skipped itself
+        run: |
+          set -euo pipefail
+          pytest -q -m box -rs | tee box.txt
+          if grep -qiF 'skipped' box.txt; then
+            echo 'a box test skipped itself -- the runner image lost a directory' >&2
+            exit 1
+          fi
+          grep -qE '[0-9]+ passed' box.txt
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install ruff
+      - run: ruff check .
+
+  dogfood:
+    # The README quotes this. If the example or the tool changes, this is the
+    # job that notices before a reader does.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e .
+
+      - name: the shipped example passes and says what the README says
+        run: |
+          set -euo pipefail
+          stockbox run -c examples/corpus.toml | tee out.txt
+          grep -qF 'every floor met, nothing broken' out.txt
+          for shape in 'json:' 'shell:'; do grep -qF "$shape" out.txt; done
+          grep -qF 'floor of 40 verdicts: met' out.txt
+          grep -qF 'floor of 10 verdicts: met' out.txt
+          # Counts move with the runner image, so assert the shape of the
+          # result rather than the numbers: nothing declined, nothing broken.
+          grep -qE 'declined 0 +broken 0 +soundness 0' out.txt
+
+      - name: roots reports per-root counts without running anything
+        run: |
+          set -euo pipefail
+          stockbox roots -c examples/corpus.toml | tee roots.txt
+          grep -qF '/usr/lib/python3' roots.txt
+          grep -qE 'json: [0-9]+ candidates' roots.txt
+
+      - name: --dry-run runs nothing
+        run: |
+          set -euo pipefail
+          stockbox run -c examples/corpus.toml --dry-run | tee dry.txt
+          grep -qF 'Nothing was run' dry.txt
+          grep -qF 'json.tool' dry.txt
+
+      - name: a corpus the checker declines fails, and says it tested nothing
+        run: |
+          set -euo pipefail
+          # The measured case the tool exists for, reproduced with a checker
+          # that is always on the box: `false` declines every input it is
+          # given, so the corpus is real and the verdict count is zero.
+          cat > declined.toml <<'TOML'
+          [[shape]]
+          name = "all-declined"
+          roots = ["/usr/share/doc"]
+          names = ["*.json"]
+          command = ["false", "{path}"]
+          verdict = [0]
+          declined = [1]
+          min_verdicts = 1
+          TOML
+          stockbox run -c declined.toml > declined.txt && s=0 || s=$?
+          cat declined.txt
+          test "$s" -eq 1
+          grep -qF 'NOT MET' declined.txt
+          grep -qF 'Every input was declined' declined.txt
+          grep -qF 'Corpus too thin' declined.txt
+
+      - name: an undeclared exit code is broken, and beats a met floor
+        run: |
+          set -euo pipefail
+          # 42 is declared as neither a verdict nor declined, so every input
+          # lands in broken and the unmet floor is reported but not the exit.
+          cat > broken.toml <<'TOML'
+          [[shape]]
+          name = "undeclared"
+          roots = ["/usr/share/doc"]
+          names = ["*.json"]
+          command = ["sh", "-c", "exit 42", "--", "{path}"]
+          verdict = [0]
+          min_verdicts = 1
+          TOML
+          stockbox run -c broken.toml > broken.txt && s=0 || s=$?
+          cat broken.txt
+          test "$s" -eq 3
+          grep -qF 'exit 42' broken.txt
+          grep -qF 'reproduce:' broken.txt
+          grep -qF 'broke the checker' broken.txt
+
+      - name: a corpus file that asserts nothing is rejected
+        run: |
+          set -euo pipefail
+          # A floor of zero and an empty file are both "green for free", which
+          # is the failure this tool exists to catch. Neither is accepted.
+          printf '' > empty.toml
+          stockbox run -c empty.toml 2> empty.err && s=0 || s=$?
+          cat empty.err
+          test "$s" -eq 2
+          grep -qF 'no [[shape]] tables' empty.err
+
+          cat > zero.toml <<'TOML'
+          [[shape]]
+          name = "zero"
+          roots = ["/usr/share/doc"]
+          names = ["*.json"]
+          command = ["true", "{path}"]
+          min_verdicts = 0
+          TOML
+          stockbox run -c zero.toml 2> zero.err && s=0 || s=$?
+          cat zero.err
+          test "$s" -eq 2
+          grep -qF 'floor of zero asserts' zero.err
+
+      - name: --json is valid JSON and carries the exit
+        run: |
+          set -euo pipefail
+          stockbox run -c examples/corpus.toml --json > out.json
+          python3 -c "
+          import json
+          d = json.load(open('out.json'))
+          assert d['exit'] == 0, d['exit']
+          assert d['verdicts'] >= 50, d['verdicts']
+          names = {s['name'] for s in d['shapes']}
+          assert names == {'json', 'shell'}, names
+          for s in d['shapes']:
+              assert s['floor_met'] is True, s
+              assert s['broken_inputs'] == [], s
+          print('json ok')
+          "
