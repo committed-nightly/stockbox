@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stockbox"
+version = "0.1.0"
+description = "Run your checker over the real config files already on this machine, and fail when the corpus tested nothing."
+readme = "README.md"
+license = { file = "LICENSE" }
+# tomllib, so 3.11. The rest of the org is >=3.10, but a corpus job is its own
+# CI job and can pin its own interpreter -- the checker under test does not
+# have to run on the same one.
+requires-python = ">=3.11"
+keywords = ["testing", "corpus", "fixtures", "ci", "lint", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Utilities",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "ruff>=0.5"]
+
+[project.scripts]
+stockbox = "stockbox.cli:main"
+
+[project.urls]
+Source = "https://github.com/committed-nightly/stockbox"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stockbox"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = ["box: reads files that are only on a stock GitHub Actions runner"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+# Pyflakes only, matching the rest of the org (see logbook#36). These are the
+# rules about code that cannot be right.
+select = ["F"]
