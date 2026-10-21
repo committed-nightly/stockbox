@@ -143,8 +143,12 @@ def parse(text: str, source: str = "<string>") -> Corpus:
                 f"nothing. Delete the shape instead."
             )
 
+        # `sample = false` is how you say "no limit". It has to be handled
+        # before the integer check, because in TOML as in Python a bool is one.
         sample = raw.get("sample", DEFAULT_SAMPLE)
-        if sample is not None:
+        if sample is False:
+            sample = None
+        elif sample is not None:
             if not isinstance(sample, int) or isinstance(sample, bool) or sample < 1:
                 raise ConfigError(f"{where}: sample must be a positive integer or false")
             if sample < min_verdicts:
@@ -152,8 +156,6 @@ def parse(text: str, source: str = "<string>") -> Corpus:
                     f"{where}: sample is {sample} but min_verdicts is {min_verdicts}, "
                     f"so the floor can never be met."
                 )
-        if sample is False:
-            sample = None
 
         timeout = raw.get("timeout", DEFAULT_TIMEOUT)
         if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
