@@ -39,11 +39,11 @@ jobs:
       - name: no box test skipped itself
         run: |
           set -euo pipefail
-          # `-o addopts=` clears the `-q` in pyproject.toml. Without it the `-q`
-          # below is the second one, and two of them suppress the summary line
-          # these greps read -- which is how the first version of this job
-          # failed while every test passed.
-          pytest -o addopts= -q -rs -m box | tee box.txt
+          # `-q` once, which is all it takes now that pyproject.toml does not
+          # also pass it. Two of them suppress the summary line these greps
+          # read, which is how the first version of this job failed while every
+          # test passed.
+          pytest -q -rs -m box | tee box.txt
           if grep -qiF 'skipped' box.txt; then
             echo 'a box test skipped itself -- the runner image lost a directory' >&2
             exit 1

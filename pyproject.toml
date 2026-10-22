@@ -38,7 +38,11 @@ packages = ["src/stockbox"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# No `addopts = "-q"` here on purpose. `-q` is the natural thing to type and
+# what every invocation in this repo and its README passes; combined with one
+# here it becomes `-qq`, which suppresses the `N passed` summary line. That
+# made `pytest -q  # 71 tests` a command whose claim it could not show, and
+# cost the box job a green run that asserted nothing. Pass `-q` explicitly.
 markers = ["box: reads files that are only on a stock GitHub Actions runner"]
 
 [tool.ruff]

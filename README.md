@@ -148,8 +148,24 @@ have thought about. If the checker starts exiting 4, you hear about it.
 **`soundness` is always broken**, even if you also list the code as a verdict. A checker reporting
 that its own model was wrong has not passed.
 
+**A checker that never started is reported apart from one that timed out.** Neither has an exit
+status, so the report says `not run` or `timeout` rather than a number, and `--json` carries a
+`kind` alongside the null `exit`. When nothing could be started at all, the report says so instead
+of advising you to widen your roots — an absent command is not evidence about your corpus.
+
 Every broken input is printed with the command that produced it, so the next step is a copy and a
 paste rather than a reconstruction.
+
+## Running the tests
+
+```
+pip install -e ".[dev]"
+pytest -q
+pytest -q -rs -m box   # the few that read this machine's own files; none should skip
+```
+
+Pass `-q` yourself; it is deliberately not in `pyproject.toml`, because two of them suppress the
+`N passed` line and a test run you cannot count is the sort of thing this tool exists to object to.
 
 ## What it does not do
 
