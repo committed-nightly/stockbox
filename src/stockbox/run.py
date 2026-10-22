@@ -14,21 +14,34 @@ from pathlib import Path
 from .config import Shape
 from .locate import Located, sample
 
-TIMEOUT_CODE = -1  # not a real exit status; subprocess timeouts have none
+# How a run ended. Two of these have no exit status at all, and they are not
+# the same failure: one is the checker taking too long, the other is the
+# checker never having started. Inferring them from `returncode is None`
+# reported a missing command as a timeout, which is a plausible-looking lie
+# that sends you looking for a performance problem you do not have.
+EXITED = "exited"
+TIMED_OUT = "timed-out"
+NOT_RUN = "not-run"
 
 
 @dataclass(frozen=True)
 class Result:
     path: Path
     command: tuple[str, ...]
-    returncode: int | None  # None means it timed out
+    returncode: int | None  # None for TIMED_OUT and NOT_RUN alike -- use `kind`
     bucket: str
     stdout: str
     stderr: str
+    kind: str = EXITED
 
     @property
     def status(self) -> str:
-        return "timeout" if self.returncode is None else str(self.returncode)
+        """How this ended, as the report's middle column."""
+        if self.kind == TIMED_OUT:
+            return "timeout"
+        if self.kind == NOT_RUN:
+            return "not run"
+        return f"exit {self.returncode}"
 
 
 @dataclass
@@ -48,6 +61,12 @@ class ShapeRun:
     @property
     def broken(self) -> list[Result]:
         return [r for r in self.results if r.bucket in ("broken", "soundness")]
+
+    @property
+    def not_run(self) -> list[Result]:
+        """Inputs the checker never started on. A reason, not a fourth bucket --
+        these are still broken, and still have to fail the build."""
+        return [r for r in self.results if r.kind == NOT_RUN]
 
     @property
     def floor_met(self) -> bool:
@@ -83,6 +102,7 @@ def run_one(shape: Shape, path: Path) -> Result:
             bucket="broken",
             stdout="",
             stderr=f"stockbox: no result after {shape.timeout:g}s",
+            kind=TIMED_OUT,
         )
     except OSError as exc:
         return Result(
@@ -92,6 +112,7 @@ def run_one(shape: Shape, path: Path) -> Result:
             bucket="broken",
             stdout="",
             stderr=f"stockbox: could not run {command[0]!r}: {exc}",
+            kind=NOT_RUN,
         )
     return Result(
         path=path,
@@ -100,6 +121,7 @@ def run_one(shape: Shape, path: Path) -> Result:
         bucket=shape.bucket(proc.returncode),
         stdout=proc.stdout,
         stderr=proc.stderr,
+        kind=EXITED,
     )
 
 

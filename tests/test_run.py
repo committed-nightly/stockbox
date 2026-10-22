@@ -13,7 +13,7 @@ import pytest
 from stockbox.config import parse
 from stockbox.locate import find
 from stockbox.report import EXIT_BROKEN, EXIT_FLOOR, EXIT_OK, Outcome, as_json, text
-from stockbox.run import build_command, run_shape
+from stockbox.run import NOT_RUN, TIMED_OUT, build_command, run_shape
 
 # Reads the file it is given and exits with the number in it. "hang" sleeps.
 CHECKER = """\
@@ -133,25 +133,75 @@ def test_a_timeout_is_broken_not_declined(tmp_path, checker):
     assert run.count("broken") == 1
     broken = run.broken[0]
     assert broken.returncode is None
+    assert broken.kind == TIMED_OUT
     assert broken.status == "timeout"
     assert "no result after" in broken.stderr
     assert out.exit_code == EXIT_BROKEN
+    assert "broken  timeout" in text(out)
 
 
-def test_a_checker_that_is_not_installed_is_broken_not_a_crash(tmp_path):
-    root = corpus_of(tmp_path / "corpus", ["0"])
+def missing_checker_outcome(tmp_path, *, count=1, min_verdicts=1):
+    root = corpus_of(tmp_path / "corpus", ["0"] * count)
     shape = parse(f"""
         [[shape]]
         name = "cases"
         roots = ["{root}"]
         names = ["*.case"]
         command = ["stockbox-no-such-checker", "{{path}}"]
-        min_verdicts = 1
+        min_verdicts = {min_verdicts}
     """).shape("cases")
     located = find(shape.roots, shape.names, shape.skip_names)
-    out = Outcome(runs=[run_shape(shape, located)])
+    return Outcome(runs=[run_shape(shape, located)])
+
+
+def test_a_checker_that_is_not_installed_is_broken_not_a_crash(tmp_path):
+    out = missing_checker_outcome(tmp_path)
     assert out.exit_code == EXIT_BROKEN
     assert "could not run" in out.runs[0].broken[0].stderr
+
+
+def test_a_checker_that_is_not_installed_is_not_reported_as_a_timeout(tmp_path):
+    # The whole report block used to say "exit timeout" directly above a stderr
+    # line saying "No such file or directory", because both failures were
+    # inferred from `returncode is None`.
+    out = missing_checker_outcome(tmp_path)
+    result = out.runs[0].broken[0]
+    assert result.returncode is None  # still true, and still not enough to tell
+    assert result.kind == NOT_RUN
+    assert result.status == "not run"
+    assert "timeout" not in text(out)
+
+
+def test_a_missing_checker_says_nothing_about_the_corpus(tmp_path):
+    # Three lines of the report used to blame the corpus for an absent command:
+    # the status, the floor advice, and the summary.
+    rendered = text(missing_checker_outcome(tmp_path, count=4, min_verdicts=2))
+    assert "The checker never ran" in rendered
+    assert "says nothing about the corpus" in rendered
+    assert "could not be run on any of 4 inputs" in rendered
+    assert "widen the roots" not in rendered
+    assert "broke the checker" not in rendered
+
+
+def test_a_real_crash_and_a_missing_checker_are_counted_apart(tmp_path, checker):
+    # A shape whose checker exists: "broke the checker" is the true story here,
+    # and the not-run wording must not swallow it.
+    rendered = text(outcome_for(tmp_path, checker, ["0", "9"], min_verdicts=1))
+    assert "1 input broke the checker" in rendered
+    assert "could not be run" not in rendered
+    assert "broken  exit 9" in rendered
+
+
+def test_json_distinguishes_a_timeout_from_a_checker_that_never_ran(tmp_path, checker):
+    import json
+
+    # `exit` is null for both, so the JSON needed the discriminant too.
+    timed_out = json.loads(as_json(outcome_for(tmp_path, checker, ["hang"], min_verdicts=1)))
+    absent = json.loads(as_json(missing_checker_outcome(tmp_path / "b")))
+    for payload in (timed_out, absent):
+        assert payload["shapes"][0]["broken_inputs"][0]["exit"] is None
+    assert timed_out["shapes"][0]["broken_inputs"][0]["kind"] == TIMED_OUT
+    assert absent["shapes"][0]["broken_inputs"][0]["kind"] == NOT_RUN
 
 
 def test_sample_limits_what_runs_but_not_what_is_counted_as_found(tmp_path, checker):

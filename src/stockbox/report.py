@@ -101,7 +101,7 @@ def text(outcome: Outcome, *, dry_run: bool = False) -> str:
 
         for result in run.broken[:MAX_SHOWN]:
             label = "soundness" if result.bucket == "soundness" else "broken"
-            out.append(f"\n    {label}  exit {result.status}  {result.path}")
+            out.append(f"\n    {label}  {result.status}  {result.path}")
             out.append(f"      {_first_line(result)}")
             out.append(f"      reproduce: {_shell(result.command)}")
         if len(run.broken) > MAX_SHOWN:
@@ -122,6 +122,15 @@ def _why_floor_missed(run: ShapeRun) -> str:
         return (
             "The corpus is empty. Check the roots exist on this machine and that "
             "`names` matches what the files are actually called."
+        )
+    if len(run.not_run) == len(run.results):
+        # Nothing here is about the corpus, so none of the advice below applies.
+        # Telling someone to widen their roots because they typo'd `command` is
+        # how this report wastes an evening.
+        return (
+            f"The checker never ran: {_shell(run.results[0].command[:1])} could not "
+            f"be started for any of the {len(run.results)} inputs. This says nothing "
+            f"about the corpus -- fix `command` or install the checker, then re-run."
         )
     declined = run.count("declined")
     if declined == len(run.sampled):
@@ -145,10 +154,21 @@ def _summary(outcome: Outcome) -> str:
     plural = "" if shapes == 1 else "s"
 
     if outcome.any_broken:
+        not_run = sum(len(r.not_run) for r in outcome.runs)
+        if not_run == broken:
+            # "broke the checker" would be the wrong story entirely: the checker
+            # was never started, so it has not been tested and neither has the
+            # corpus. Nothing here is evidence about either one.
+            return (
+                f"The checker could not be run on any of {not_run} "
+                f"input{'' if not_run == 1 else 's'}. Nothing was tested."
+            )
         soundness = sum(r.count("soundness") for r in outcome.runs)
         tail = f" ({soundness} of them the checker's own soundness check)" if soundness else ""
+        ran = f" {not_run} more could not be run at all." if not_run else ""
         return (
-            f"{broken} input{'' if broken == 1 else 's'} broke the checker{tail}. "
+            f"{broken - not_run} input{'' if broken - not_run == 1 else 's'} "
+            f"broke the checker{tail}.{ran} "
             f"{verdicts} verdicts across {shapes} shape{plural}."
         )
     if outcome.unmet:
@@ -186,6 +206,7 @@ def as_json(outcome: Outcome) -> str:
                     {
                         "path": str(r.path),
                         "exit": r.returncode,
+                        "kind": r.kind,  # `exit` is null for timed-out and not-run alike
                         "bucket": r.bucket,
                         "command": list(r.command),
                         "message": _first_line(r),
