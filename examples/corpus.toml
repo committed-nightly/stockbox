@@ -1,0 +1,30 @@
+# A worked corpus file, using two checkers that are already on a stock Ubuntu
+# runner and real inputs that ship with the distribution. `stockbox run
+# -c examples/corpus.toml` from a clone should pass.
+#
+# Both checkers here only read their input. That is deliberate: see the safety
+# section of the README before you point a shape at a checker that runs one.
+
+[[shape]]
+name = "json"
+# 1,690 real JSON files on the runner this was written against, none of them
+# written to be test data.
+roots = ["/usr/lib/python3", "/usr/share/doc"]
+names = ["*.json"]
+command = ["python3", "-m", "json.tool", "{path}"]
+# json.tool has an opinion either way: 0 is valid, 1 is a parse error. Both
+# mean the checker reached the file, which is what the floor counts.
+verdict = [0, 1]
+sample = 60
+min_verdicts = 40
+
+[[shape]]
+name = "shell"
+roots = ["/usr/share/doc", "/etc"]
+names = ["*.sh", "*.bash"]
+# -n parses and does not execute. Without it this shape would run every
+# init script on the machine.
+command = ["bash", "-n", "{path}"]
+verdict = [0, 2]
+sample = 30
+min_verdicts = 10
