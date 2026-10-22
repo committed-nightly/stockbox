@@ -123,7 +123,9 @@ def _why_floor_missed(run: ShapeRun) -> str:
             "The corpus is empty. Check the roots exist on this machine and that "
             "`names` matches what the files are actually called."
         )
-    if len(run.not_run) == len(run.results):
+    # `run.results` guards the empty case: a dry-run ShapeRun has sampled paths
+    # and no results, and nothing stops it being rendered without `dry_run`.
+    if run.results and len(run.not_run) == len(run.results):
         # Nothing here is about the corpus, so none of the advice below applies.
         # Telling someone to widen their roots because they typo'd `command` is
         # how this report wastes an evening.

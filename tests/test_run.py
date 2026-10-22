@@ -222,6 +222,15 @@ def test_dry_run_runs_nothing(tmp_path, checker):
     assert "would run 5" in rendered
 
 
+def test_a_dry_run_rendered_without_the_flag_does_not_crash(tmp_path, checker):
+    # Sampled paths and no results at all: every result is a not-run, vacuously.
+    # Nothing in the API stops this being rendered as an ordinary report.
+    shape, located = build(tmp_path, checker, ["0"], min_verdicts=5)
+    run = run_shape(shape, located, dry_run=True)
+    assert run.sampled and not run.results
+    assert "NOT MET" in text(Outcome(runs=[run]))
+
+
 def test_the_reproduce_command_is_the_command_that_ran(tmp_path, checker):
     out = outcome_for(tmp_path, checker, ["9"], min_verdicts=1)
     broken = out.runs[0].broken[0]
