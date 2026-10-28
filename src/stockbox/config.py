@@ -4,10 +4,17 @@ A shape is one (corpus, checker) pair. The fields that matter are `roots`
 (where to look -- never the whole filesystem, see `locate`) and the exit-code
 buckets, which are what turns a pile of exit statuses into the only number
 worth reporting: how many inputs the checker actually formed an opinion about.
+
+`subject_pattern` and `min_exercised` are the second floor, and they exist
+because the first one overstates. An exit status tells you the checker read the
+file; it does not tell you the file contained anything the checker is *about*.
+Four of this org's workflow checkers get a verdict on all 47 real project trees
+on a GitHub runner, and the construct each one looks for is in 3 to 11 of them.
 """
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +40,11 @@ class Shape:
     sample: int | None
     timeout: float
     skip_names: tuple[str, ...] = ()
+    # Compiled rather than kept as a string so a bad regex is a config error at
+    # load time, not a traceback 400 files into a corpus run. `.pattern` gives
+    # the original back for the report, which has to quote it.
+    subject: re.Pattern[str] | None = None
+    min_exercised: int | None = None
 
     def bucket(self, returncode: int) -> str:
         """Which bucket an exit status falls in.
@@ -74,6 +86,58 @@ def _strings(raw: object, where: str) -> tuple[str, ...]:
     if not isinstance(raw, list) or not all(isinstance(s, str) for s in raw):
         raise ConfigError(f"{where} must be a list of strings, got {raw!r}")
     return tuple(raw)
+
+
+def _subject(raw: object, where: str) -> re.Pattern[str] | None:
+    """Compile `subject_pattern`, the regex that reads the checker's own count.
+
+    One capturing group, and it has to be the number. Zero groups leaves nothing
+    to read; two leaves stockbox choosing between them, and a floor that depends
+    on which group a stranger meant is not a floor.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw:
+        raise ConfigError(f"{where}: subject_pattern must be a non-empty string, got {raw!r}")
+    try:
+        # MULTILINE because the useful patterns are anchored to a line of the
+        # checker's output -- `^(\d+) cache steps?` and friends.
+        pattern = re.compile(raw, re.MULTILINE)
+    except re.error as exc:
+        raise ConfigError(f"{where}: subject_pattern is not a valid regex: {exc}") from exc
+    if pattern.groups != 1:
+        raise ConfigError(
+            f"{where}: subject_pattern has {pattern.groups} capturing groups and "
+            f"needs exactly one -- the number the checker prints. Wrap the count in "
+            f"parentheses and nothing else."
+        )
+    return pattern
+
+
+def _min_exercised(
+    raw: object, subject: re.Pattern[str] | None, sample: int | None, where: str
+) -> int | None:
+    if raw is None:
+        return None
+    if subject is None:
+        raise ConfigError(
+            f"{where}: min_exercised needs a subject_pattern. Without one nothing "
+            f"counts the subject, so the floor would be a check on a number stockbox "
+            f"never took."
+        )
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        raise ConfigError(f"{where}: min_exercised must be an integer, got {raw!r}")
+    if raw < 1:
+        raise ConfigError(
+            f"{where}: min_exercised is {raw}. A floor of zero asserts nothing -- "
+            f"drop the key and keep the pattern if you only want the number reported."
+        )
+    if sample is not None and raw > sample:
+        raise ConfigError(
+            f"{where}: sample is {sample} but min_exercised is {raw}, so the floor "
+            f"can never be met."
+        )
+    return raw
 
 
 def parse(text: str, source: str = "<string>") -> Corpus:
@@ -161,6 +225,9 @@ def parse(text: str, source: str = "<string>") -> Corpus:
         if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
             raise ConfigError(f"{where}: timeout must be a positive number")
 
+        subject = _subject(raw.get("subject_pattern"), where)
+        min_exercised = _min_exercised(raw.get("min_exercised"), subject, sample, where)
+
         verdict = _codes(raw.get("verdict"), f"{where}: verdict", frozenset({0}))
         declined = _codes(raw.get("declined"), f"{where}: declined", frozenset())
         soundness = _codes(raw.get("soundness"), f"{where}: soundness", frozenset())
@@ -184,6 +251,8 @@ def parse(text: str, source: str = "<string>") -> Corpus:
                 sample=sample,
                 timeout=float(timeout),
                 skip_names=_strings(raw.get("skip_names", []), f"{where}: skip_names"),
+                subject=subject,
+                min_exercised=min_exercised,
             )
         )
     return Corpus(shapes=shapes)
