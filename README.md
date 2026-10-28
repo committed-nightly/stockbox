@@ -16,7 +16,7 @@ stockbox sorts every run into three buckets:
 
 | bucket | meaning |
 | --- | --- |
-| **verdict** | the checker reached the file and formed an opinion. This is the only bucket that tested anything. |
+| **verdict** | the checker reached the file and formed an opinion. The only bucket that tested anything — necessary, and not sufficient; see the next section. |
 | **declined** | the checker refused the input. A real file, not a bug, not a test either. |
 | **broken** | a crash, a timeout, or an exit code you did not declare. |
 
@@ -25,8 +25,8 @@ candidate count is the number that makes a useless job look thorough.
 
 ## The number that matters one level down
 
-A verdict means the checker read the file. It does not mean the file contained anything the checker
-is *about*, and for most checkers it usually doesn't:
+A verdict means the checker read the file. It does not mean the file held anything the checker is
+*about*, and the narrower the checker, the less often it did:
 
 ```
 json-descriptions: 1690 candidates (/usr/lib/python3=1688, /usr/share/doc=2)
@@ -158,28 +158,37 @@ exercised the checker.
 
 ## The same thing, one level down
 
-A stock GitHub Actions runner has 119 real GitHub Actions workflow files on it, in 47 project trees
-vendored inside the Julia standard library, the Google Cloud SDK, `node_modules` and nvm. Written by
-strangers, for their own projects, which is exactly what you want.
+A stock `ubuntu-latest` runner has 119 real GitHub Actions workflow files on it, in 47 project
+trees vendored inside the Julia standard library, the Google Cloud SDK, `node_modules`, nvm,
+vcpkg and miniconda. Written by strangers for their own projects, which is exactly what you want.
 
-Four checkers that read workflow files get a verdict on **47 of 47** of those trees. Here is how
-many of the 119 files contain the construct each one is actually about:
+Four checkers in this org read workflow files. Pointed at those 47 trees on 2026-10-28:
 
-| checker | its subject | files holding one |
+| checker | verdicts | trees where it saw its own subject |
 | --- | --- | --- |
-| `deadtrigger` | the `on:` trigger block | 117 |
-| `groupclash` | a `concurrency:` block | 13 |
-| `coldcache` | an `actions/cache` step | 7 |
-| `blankout` | a `steps.*.outputs.*` reference | 5 |
+| `groupclash` | 47 of 47 | 4 — five `concurrency:` blocks between them |
+| `coldcache` | 47 of 47 | 5 — ten `actions/cache` steps between them |
+| `blankout` | 47 of 47 | unknowable: it reports no count of anything |
+| `deadtrigger` | 2 of 47 | — declines 45, "not a git repository" |
 
-One of those four is a good corpus. All four report a clean sweep. A verdict floor cannot see the
-difference, and neither can anyone reading the green tick — which is the same failure as the 3,140
-makefiles, arrived at from the other direction: there the checker refused the files, here it
-accepted them and there was nothing inside.
+Read the first column and this is a good corpus four times over. Read the second and only one of
+these shapes is worth having in CI.
 
-(The gap found something real on the way past: `coldcache` reports a restore-key that can never
-match in Julia's `SuiteSparse` stdlib, on the second-sparsest corpus of the four. Seven files were
-enough. Forty-seven verdicts were not the reason.)
+`deadtrigger` is the ugly joke in it. Its subject is a trigger block, which is in 117 of the 119
+files — by far the densest of the four — and it is the one checker that cannot use the corpus at
+all, because it checks triggers against the repository they sit in and a vendored tree has no
+`.git`. The three that accept everything are the three with nothing to look at. Nothing in a
+verdict count tells you that; `declined 45` on the row that would actually have tested something
+is as close as the old report could get, and it points the wrong way.
+
+`coldcache`'s five trees were enough to find something real: a restore-key in Julia's
+`SuiteSparse` stdlib that is not a prefix of any key anything saves, so it can never match. Five
+trees of forty-seven. The other forty-two verdicts contributed nothing and cost the same.
+
+And `blankout`'s row is the honest limit of this feature. It has nothing to read back — no count
+in its text output, none in `--json` — so there is no pattern to write and no floor to set. A
+checker that does not report its own denominator cannot be measured this way, which is a reason
+to report one.
 
 ## Try the shipped example
 
