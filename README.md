@@ -16,13 +16,60 @@ stockbox sorts every run into three buckets:
 
 | bucket | meaning |
 | --- | --- |
-| **verdict** | the checker reached the file and formed an opinion. This is the only bucket that tested anything. |
+| **verdict** | the checker reached the file and formed an opinion. The only bucket that tested anything — necessary, and not sufficient; see the next section. |
 | **declined** | the checker refused the input. A real file, not a bug, not a test either. |
 | **broken** | a crash, a timeout, or an exit code you did not declare. |
 
-You declare a floor on **verdicts**, and that floor is the only assertion stockbox makes. Candidate
-count is reported but never asserted, because the candidate count is the number that makes a
-useless job look thorough.
+You declare a floor on **verdicts**. Candidate count is reported but never asserted, because the
+candidate count is the number that makes a useless job look thorough.
+
+## The number that matters one level down
+
+A verdict means the checker read the file. It does not mean the file held anything the checker is
+*about*, and the narrower the checker, the less often it did:
+
+```
+json-descriptions: 1690 candidates (/usr/lib/python3=1688, /usr/share/doc=2)
+    sampled 60: verdict 60   declined 0   broken 0   soundness 0
+    floor of 40 verdicts: met
+    exercised 6 of 60 verdicts (95 instances of the subject seen)
+```
+
+Sixty files, sixty verdicts, nothing declined, nothing broken, floor comfortably met. Six of those
+files contained the construct the checker looks for. The other fifty-four verdicts are the checker
+opening a file and shrugging — real inputs, honestly reached, and no more a test than the 3,140
+makefiles below.
+
+The only thing that can tell you which is which is the checker's own count of what it saw, so
+stockbox reads it back out of the output. Declare the pattern and, when you have measured it, a
+floor:
+
+```toml
+subject_pattern = '^([0-9]+) cache steps?'   # one group, and it has to be the number
+min_exercised = 3
+```
+
+| | |
+| --- | --- |
+| **exercised** | a verdict where the checker reported at least one of its subject. |
+| **vacuous** | a verdict where it reported none. The file was fine; it just wasn't about anything. |
+| **not measured** | a verdict whose output the pattern didn't match. Not the same as zero — see below. |
+
+Three things worth knowing before you use it:
+
+- **A pattern that matches nothing exits 3, not 1.** "No cache steps here" is evidence about your
+  corpus; *silence* is evidence about your pattern. Reporting a typo'd regex as a thin corpus would
+  send you to widen roots that were never the problem, so it is reported as broken, with the
+  pattern quoted back at you.
+- **The floor counts inputs, not instances.** 95 instances across 6 files is a corpus of six things,
+  and a floor on the total would be met by one pathological file. The instance count is reported
+  because it is interesting and never asserted on, which also means a pattern that double-counts
+  cannot change a result.
+- **`stockbox roots` cannot predict this.** Counting files tells you nothing about what is in them.
+  Only a run measures it, and the `roots` output says so rather than guessing.
+
+A pattern with no `min_exercised` is fine and asserts nothing — that is the state you want while
+you are finding out what the number is.
 
 ## Install
 
@@ -49,6 +96,13 @@ sample = 25
 min_verdicts = 10
 ```
 
+Optionally, the second floor — how many of those verdicts actually had something to decide:
+
+```toml
+subject_pattern = '^([0-9]+) lines never used'
+min_exercised = 5
+```
+
 Then, before you write any of that, find out whether the files are even there:
 
 ```
@@ -70,7 +124,8 @@ makefiles: 31 candidates (/usr/share/doc=31)
 ```
 
 Exit codes: `0` every floor met and nothing broken, `1` a floor was not met, `2` the corpus file
-or command line is wrong, `3` an input broke the checker. `3` wins over `1`.
+or command line is wrong, `3` an input broke the checker or a `subject_pattern` measured nothing.
+`3` wins over `1`.
 
 ## A real example, in both directions
 
@@ -101,9 +156,44 @@ The corpus that looked a hundred times better was the worthless one, and nothing
 tells you that. Without the floor, the `/usr/src` shape is a green CI job that has never once
 exercised the checker.
 
+## The same thing, one level down
+
+A stock `ubuntu-latest` runner has 119 real GitHub Actions workflow files on it, in 47 project
+trees vendored inside the Julia standard library, the Google Cloud SDK, `node_modules`, nvm,
+vcpkg and miniconda. Written by strangers for their own projects, which is exactly what you want.
+
+Four checkers in this org read workflow files. Pointed at those 47 trees on 2026-10-28:
+
+| checker | verdicts | trees where it saw its own subject |
+| --- | --- | --- |
+| `groupclash` | 47 of 47 | 4 — five `concurrency:` blocks between them |
+| `coldcache` | 47 of 47 | 5 — ten `actions/cache` steps between them |
+| `blankout` | 47 of 47 | unknowable: it reports no count of anything |
+| `deadtrigger` | 2 of 47 | — declines 45, "not a git repository" |
+
+Read the first column and this is a good corpus four times over. Read the second and only one of
+these shapes is worth having in CI.
+
+`deadtrigger` is the ugly joke in it. Its subject is a trigger block, which is in 117 of the 119
+files — by far the densest of the four — and it is the one checker that cannot use the corpus at
+all, because it checks triggers against the repository they sit in and a vendored tree has no
+`.git`. The three that accept everything are the three with nothing to look at. Nothing in a
+verdict count tells you that; `declined 45` on the row that would actually have tested something
+is as close as the old report could get, and it points the wrong way.
+
+`coldcache`'s five trees were enough to find something real: a restore-key in Julia's
+`SuiteSparse` stdlib that is not a prefix of any key anything saves, so it can never match. Five
+trees of forty-seven. The other forty-two verdicts contributed nothing and cost the same.
+
+And `blankout`'s row is the honest limit of this feature. It has nothing to read back — no count
+in its text output, none in `--json` — so there is no pattern to write and no floor to set. A
+checker that does not report its own denominator cannot be measured this way, which is a reason
+to report one.
+
 ## Try the shipped example
 
-Two shapes, two checkers already on a stock Ubuntu runner, inputs that come with the distribution:
+Three shapes, three checkers already on a stock Ubuntu runner, inputs that come with the
+distribution. The third one is the vacuous-corpus case above, as it actually runs:
 
 ```
 git clone https://github.com/committed-nightly/stockbox && cd stockbox
@@ -125,7 +215,7 @@ working directory set to the input's own directory. Before you add a shape:
 - Prefer the parse-only flag if the checker has one. `bash -n` instead of `bash`.
 - `timeout` is per input and defaults to 30 seconds, so one pathological file cannot hang CI.
 
-Both shapes in `examples/corpus.toml` use checkers that only read.
+All three shapes in `examples/corpus.toml` use checkers that only read.
 
 ## Details worth knowing
 
@@ -144,6 +234,12 @@ reproduces; a different box does not, because the file list is not the same eith
 
 **An unlisted exit code is broken, not ignored.** Only `verdict` and `declined` are codes you
 have thought about. If the checker starts exiting 4, you hear about it.
+
+**Braces in a `command` are yours, not stockbox's.** `{path}`, `{dir}` and `{name}` are replaced;
+every other brace is passed through untouched, so an awk program, a jq filter and a shell brace
+expansion all work as written and need no escaping. A brace-wrapped word that *isn't* one of the
+three — `{pathh}` — is rejected when the corpus file loads, because a plain replacement would
+otherwise hand the checker the literal string and let it complain about a missing file.
 
 **`soundness` is always broken**, even if you also list the code as a verdict. A checker reporting
 that its own model was wrong has not passed.

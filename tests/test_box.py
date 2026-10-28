@@ -18,7 +18,8 @@ import pytest
 from stockbox.cli import main
 from stockbox.config import load
 from stockbox.locate import find
-from stockbox.report import EXIT_OK
+from stockbox.report import EXIT_OK, Outcome, as_json
+from stockbox.run import run_shape
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "examples" / "corpus.toml"
 
@@ -36,10 +37,14 @@ def _shape(name):
 
 def test_the_example_config_is_the_one_shipped():
     assert EXAMPLE.is_file()
-    assert {s.name for s in load(EXAMPLE).shapes} == {"json", "shell"}
+    assert {s.name for s in load(EXAMPLE).shapes} == {
+        "json",
+        "shell",
+        "json-descriptions",
+    }
 
 
-@pytest.mark.parametrize("name", ["json", "shell"])
+@pytest.mark.parametrize("name", ["json", "shell", "json-descriptions"])
 def test_locating_a_real_tree_finds_files_and_they_are_all_readable(name):
     shape = _shape(name)
     located = find(shape.roots, shape.names, shape.skip_names)
@@ -59,11 +64,43 @@ def test_the_example_config_passes_on_a_stock_runner(capsys):
     a floor is now too high for what ships or a checker changed its exit codes
     -- both worth knowing, and neither visible from unit tests.
     """
-    for name in ("json", "shell"):
+    for name in ("json", "shell", "json-descriptions"):
         _shape(name)
     assert main(["run", "-c", str(EXAMPLE)]) == EXIT_OK
     out = capsys.readouterr().out
     assert "every floor met, nothing broken" in out
+
+
+def test_a_real_corpus_is_mostly_vacuous_and_the_report_says_so():
+    """The measurement the exercised floor exists for, on real files.
+
+    `json-descriptions` gets a verdict on every input and holds the construct
+    in a handful of them. The numbers move with the image, so what is asserted
+    is the gap rather than its size: more verdicts than exercises, and both
+    numbers actually measured. A run where the two were equal would mean awk
+    stopped printing its count, or the pattern stopped reading it.
+    """
+    import json as _json
+
+    shape = _shape("json-descriptions")
+    located = find(shape.roots, shape.names, shape.skip_names)
+    if located.total < shape.min_verdicts:
+        pytest.skip(f"only {located.total} json inputs here")
+
+    run = run_shape(shape, located)
+    assert run.floor_met, "the verdict floor must pass -- the point is that it can"
+    assert not run.measurement_failed, "awk printed no count the pattern could read"
+    assert run.exercised >= shape.min_exercised
+    assert run.exercised < run.verdicts, (
+        f"every one of {run.verdicts} verdicts exercised the subject, which no "
+        f"longer demonstrates anything -- pick a sparser construct"
+    )
+    assert run.subjects_seen > run.exercised, "instances should outnumber the files"
+
+    payload = _json.loads(as_json(Outcome(runs=[run])))["shapes"][0]
+    assert payload["exercised"] + payload["vacuous"] + payload["unmeasured"] == (
+        payload["verdicts"]
+    )
 
 
 def test_a_real_corpus_is_big_enough_to_need_sampling():

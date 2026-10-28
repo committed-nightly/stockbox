@@ -279,3 +279,195 @@ def test_summary_wording_distinguishes_thin_from_broken(tmp_path, checker):
     assert "broke the checker" in text(broken)
     clean = outcome_for(tmp_path / "c", checker, ["0", "1"], min_verdicts=2)
     assert "every floor met, nothing broken" in text(clean)
+
+
+# --- exercised verdicts ---------------------------------------------------
+#
+# A verdict says the checker read the file. These say whether the file held
+# anything the checker is about, which is a different question and the one
+# a corpus is usually wrong about. Every input below exits 0 -- the exit
+# codes are identical across the whole block, so nothing here could be
+# answered by the verdict count.
+
+# Prints its first line, exits with its second. A checker that reports its
+# own denominator, which is the only thing that can answer the question.
+COUNTER = """\
+import sys
+head, _, tail = open(sys.argv[1]).read().partition("\\n")
+if head:
+    print(head)
+sys.exit(int(tail or 0))
+"""
+
+SUBJECT = "subject_pattern = '^([0-9]+) widgets$'"
+
+
+@pytest.fixture
+def counter(tmp_path):
+    path = tmp_path / "bin" / "counter.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(COUNTER)
+    return path
+
+
+def test_a_full_verdict_count_can_still_be_a_vacuous_corpus(tmp_path, counter):
+    # The measurement this floor exists for, in miniature: every input gets a
+    # verdict, the verdict floor is met, and two of twelve inputs contained
+    # the construct. On the real corpus that was 5 of 119 workflow files.
+    bodies = ["3 widgets\n0", "1 widgets\n0"] + ["0 widgets\n0"] * 10
+    out = outcome_for(tmp_path, counter, bodies, extra=SUBJECT, min_verdicts=10)
+    run = out.runs[0]
+    assert run.verdicts == 12 and run.floor_met
+    assert run.exercised == 2
+    assert run.vacuous == 10
+    assert run.subjects_seen == 4
+
+
+def test_the_exercised_floor_fails_while_the_verdict_floor_passes(tmp_path, counter):
+    bodies = ["1 widgets\n0"] + ["0 widgets\n0"] * 9
+    out = outcome_for(
+        tmp_path, counter, bodies, extra=f"{SUBJECT}\nmin_exercised = 4", min_verdicts=5
+    )
+    run = out.runs[0]
+    assert run.floor_met, "the verdict floor is met -- that is the point"
+    assert not run.exercise_floor_met
+    assert out.exit_code == EXIT_FLOOR
+    report = text(out)
+    assert "floor of 5 verdicts: met" in report
+    assert "floor of 4 exercised: NOT MET -- 9 of 10 verdicts were vacuous" in report
+    assert "held none of what it is about" in report
+
+
+def test_a_met_exercised_floor_passes(tmp_path, counter):
+    bodies = ["2 widgets\n0"] * 4 + ["0 widgets\n0"] * 4
+    out = outcome_for(
+        tmp_path, counter, bodies, extra=f"{SUBJECT}\nmin_exercised = 3", min_verdicts=5
+    )
+    assert out.exit_code == EXIT_OK
+    assert "floor of 3 exercised: met" in text(out)
+    assert "4 of those 8 exercised the subject" in text(out)
+
+
+def test_no_count_printed_is_not_the_same_as_a_count_of_zero(tmp_path, counter):
+    # The distinction the whole feature turns on. A checker saying "0 widgets"
+    # is evidence about the corpus; a checker saying nothing is evidence about
+    # the pattern. Conflating them blames the corpus for a typo.
+    bodies = ["2 widgets\n0", "0 widgets\n0", "\n0"]
+    out = outcome_for(tmp_path, counter, bodies, extra=SUBJECT, min_verdicts=1)
+    run = out.runs[0]
+    assert (run.exercised, run.vacuous, run.unmeasured) == (1, 1, 1)
+    assert "1 of those verdicts printed no count" in text(out)
+
+
+def test_a_pattern_that_matches_nothing_is_broken_not_thin(tmp_path, counter):
+    # Exit 3, not 1. Exit 1 says "widen your roots", and the roots are fine.
+    bodies = ["2 widgets\n0"] * 5
+    out = outcome_for(
+        tmp_path,
+        counter,
+        bodies,
+        extra="subject_pattern = '^([0-9]+) sprockets$'\nmin_exercised = 1",
+        min_verdicts=1,
+    )
+    run = out.runs[0]
+    assert run.verdicts == 5
+    assert run.measurement_failed
+    assert out.exit_code == EXIT_BROKEN
+    report = text(out)
+    assert "exercised: not measured" in report
+    assert "This says nothing about the corpus" in report
+    assert "Not measured: the subject_pattern for cases" in report
+    # The misleading advice must not appear: nothing here is about the corpus.
+    assert "held none of what it is about" not in report
+
+
+def test_declined_and_broken_inputs_are_neither_exercised_nor_vacuous(tmp_path, counter):
+    # They produced no verdict, so they have no count to report. Calling them
+    # vacuous would charge the corpus twice for one miss.
+    bodies = ["2 widgets\n0", "x\n2", "y\n9"]
+    out = outcome_for(tmp_path, counter, bodies, extra=SUBJECT, min_verdicts=1)
+    run = out.runs[0]
+    assert (run.verdicts, run.count("declined"), run.count("broken")) == (1, 1, 1)
+    assert len(run.subject_counts) == 1
+    assert (run.exercised, run.vacuous, run.unmeasured) == (1, 0, 0)
+
+
+def test_every_match_in_the_output_is_summed(tmp_path, counter):
+    # A checker that prints a count per file rather than one total. The sum is
+    # reported and never asserted on, so double-counting cannot change a floor.
+    out = outcome_for(tmp_path, counter, ["4 widgets\n0"], extra=SUBJECT, min_verdicts=1)
+    assert out.runs[0].subjects_seen == 4
+    multi = outcome_for(
+        tmp_path / "b",
+        counter,
+        ["4 widgets\n0"],
+        extra="subject_pattern = '([0-9]) widgets'",
+        min_verdicts=1,
+    )
+    assert multi.runs[0].subjects_seen == 4
+
+
+def test_a_group_that_captures_something_unnumeric_is_no_measurement(tmp_path, counter):
+    # Right shape of line, wrong group. Reported as "not measured" rather than
+    # silently summing to zero and reading as a vacuous corpus.
+    out = outcome_for(
+        tmp_path,
+        counter,
+        ["7 widgets\n0"] * 3,
+        extra="subject_pattern = '[0-9]+ (widgets)'\nmin_exercised = 1",
+        min_verdicts=1,
+    )
+    assert out.runs[0].measurement_failed
+    assert out.exit_code == EXIT_BROKEN
+
+
+def test_a_shape_with_no_pattern_reports_no_exercised_line(tmp_path, checker):
+    # Not measuring is not the same as measuring zero, and a line saying
+    # `exercised 0` on a shape that never asked would be a lie about the corpus.
+    out = outcome_for(tmp_path, checker, ["0", "0"], min_verdicts=1)
+    report = text(out)
+    assert "exercised" not in report
+    assert out.runs[0].exercise_floor_met
+    assert not out.runs[0].measurement_failed
+
+
+def test_the_json_payload_carries_both_floors(tmp_path, counter):
+    import json as _json
+
+    bodies = ["3 widgets\n0", "0 widgets\n0", "\n0"]
+    out = outcome_for(
+        tmp_path, counter, bodies, extra=f"{SUBJECT}\nmin_exercised = 1", min_verdicts=1
+    )
+    shape = _json.loads(as_json(out))["shapes"][0]
+    assert shape["verdicts"] == 3
+    assert shape["exercised"] == 1
+    assert shape["vacuous"] == 1
+    assert shape["unmeasured"] == 1
+    assert shape["subjects_seen"] == 3
+    assert shape["min_exercised"] == 1
+    assert shape["exercise_floor_met"] is True
+    assert shape["measurement_failed"] is False
+    assert shape["subject_pattern"] == "^([0-9]+) widgets$"
+    assert _json.loads(as_json(out))["exercised"] == 1
+
+
+def test_an_awk_program_in_a_command_reaches_the_checker_intact(tmp_path):
+    # `str.format` raised KeyError(' n++ ') from inside the corpus walk, so
+    # every awk program and every jq filter was an unhandled traceback.
+    root = corpus_of(tmp_path / "corpus", ['{"description": "x"}'])
+    shape = parse(f"""
+        [[shape]]
+        name = "cases"
+        roots = ["{root}"]
+        names = ["*.case"]
+        command = ["awk", '/description/ {{ n++ }} END {{ print n+0 " hits" }}', "{{path}}"]
+        min_verdicts = 1
+        subject_pattern = '^([0-9]+) hits$'
+        min_exercised = 1
+    """).shape("cases")
+    assert shape.command[1] == '/description/ { n++ } END { print n+0 " hits" }'
+    located = find(shape.roots, shape.names, shape.skip_names)
+    run = run_shape(shape, located)
+    assert run.results[0].stdout.strip() == "1 hits"
+    assert run.exercised == 1
+    assert Outcome(runs=[run]).exit_code == EXIT_OK

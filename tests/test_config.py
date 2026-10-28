@@ -130,3 +130,130 @@ def test_soundness_beats_verdict_when_a_code_is_in_both():
     ).shape("s")
     assert shape.bucket(3) == "soundness"
     assert shape.bucket(0) == "verdict"
+
+
+# --- subject_pattern and min_exercised ------------------------------------
+#
+# The second floor. `min_verdicts` asks whether the checker read the file;
+# these ask whether the file held anything the checker is about.
+
+
+def _with(extra: str):
+    return parse(
+        f"""
+        [[shape]]
+        name = "s"
+        roots = ["/etc"]
+        names = ["x"]
+        command = ["a", "{{path}}"]
+        min_verdicts = 1
+        {extra}
+        """
+    ).shape("s")
+
+
+def test_a_subject_pattern_is_compiled_at_load_time():
+    shape = _with("subject_pattern = '([0-9]+) cache steps?'\nmin_exercised = 3")
+    assert shape.subject is not None
+    assert shape.subject.pattern == "([0-9]+) cache steps?"
+    assert shape.min_exercised == 3
+
+
+def test_a_shape_without_one_measures_nothing_and_says_so_with_none():
+    shape = _with("")
+    assert shape.subject is None
+    assert shape.min_exercised is None
+
+
+def test_a_pattern_that_is_not_a_regex_is_a_config_error_not_a_traceback():
+    # The point of compiling at load time: 400 inputs into a corpus walk is
+    # the wrong place to find out the pattern does not parse.
+    with pytest.raises(ConfigError, match="not a valid regex"):
+        _with("subject_pattern = '([0-9]+'")
+
+
+@pytest.mark.parametrize(
+    "pattern, groups",
+    [("[0-9]+", 0), ("([0-9]+) of ([0-9]+)", 2)],
+)
+def test_a_pattern_needs_exactly_one_group(pattern, groups):
+    with pytest.raises(ConfigError, match=f"has {groups} capturing groups"):
+        _with(f"subject_pattern = '{pattern}'")
+
+
+def test_min_exercised_without_a_pattern_is_rejected():
+    # Nothing would count the subject, so the floor could only ever read zero.
+    with pytest.raises(ConfigError, match="needs a subject_pattern"):
+        _with("min_exercised = 1")
+
+
+def test_a_pattern_without_a_floor_is_allowed_and_only_reported():
+    # Measuring before choosing a floor is the documented order of work, and
+    # the number is worth printing on the way there.
+    shape = _with("subject_pattern = '([0-9]+)'")
+    assert shape.subject is not None
+    assert shape.min_exercised is None
+
+
+def test_an_exercised_floor_of_zero_is_rejected_like_the_verdict_one():
+    with pytest.raises(ConfigError, match="floor of zero asserts nothing"):
+        _with("subject_pattern = '([0-9]+)'\nmin_exercised = 0")
+
+
+def test_an_exercised_floor_above_the_sample_can_never_be_met():
+    with pytest.raises(ConfigError, match="can never be met"):
+        _with("sample = 5\nsubject_pattern = '([0-9]+)'\nmin_exercised = 6")
+
+
+# --- placeholders ---------------------------------------------------------
+
+
+def test_a_command_may_contain_braces_that_are_not_placeholders():
+    # An awk program survives parsing. Parsing was never where it broke -- the
+    # KeyError came from the substitution, so the test that proves that fix is
+    # `test_an_awk_program_in_a_command_reaches_the_checker_intact`. This one is
+    # here so that tightening the placeholder check cannot start rejecting a
+    # legitimate program at load time instead.
+    shape = parse(
+        """
+        [[shape]]
+        name = "s"
+        roots = ["/etc"]
+        names = ["x"]
+        command = ["awk", '/x/ { n++ } END { print n+0 " hits" }', "{path}"]
+        min_verdicts = 1
+        """
+    ).shape("s")
+    assert shape.command[1] == '/x/ { n++ } END { print n+0 " hits" }'
+
+
+def test_a_misspelt_placeholder_is_caught_at_load_time():
+    # Without this it is not an error at all: `{pathh}` reaches the checker
+    # as the literal string, and the checker complains about a missing file.
+    with pytest.raises(ConfigError, match=r"\{pathh\}, which is no placeholder"):
+        parse(
+            """
+            [[shape]]
+            name = "s"
+            roots = ["/etc"]
+            names = ["x"]
+            command = ["true", "{pathh}"]
+            min_verdicts = 1
+            """
+        )
+
+
+def test_braces_without_any_placeholder_still_names_no_input():
+    # The old check was `"{" in part`, which an awk program satisfies while
+    # checking the same thing on every input.
+    with pytest.raises(ConfigError, match="names no input"):
+        parse(
+            """
+            [[shape]]
+            name = "s"
+            roots = ["/etc"]
+            names = ["x"]
+            command = ["awk", "{ print }"]
+            min_verdicts = 1
+            """
+        )
