@@ -28,3 +28,27 @@ command = ["bash", "-n", "{path}"]
 verdict = [0, 2]
 sample = 30
 min_verdicts = 10
+
+[[shape]]
+name = "json-descriptions"
+# The same 1,690 files as the `json` shape above, and the reason this shape is
+# here: every one of them gets a verdict, and almost none of them is a test of
+# anything. `verdict 60` looks like a thorough corpus. It is the checker
+# reading 60 files and shrugging at 54 of them.
+roots = ["/usr/lib/python3", "/usr/share/doc"]
+names = ["*.json"]
+# A stand-in for a checker that reports its own denominator, the way
+# `coldcache` prints "1 workflow checked, 1 cache step". awk exits 0 on
+# anything it can read, so the exit status says only "I looked" -- the number
+# it prints is the only thing that says whether there was anything to look at.
+command = ["awk", '/"description"/ { n++ } END { print n+0 " descriptions" }', "{path}"]
+verdict = [0]
+declined = [2]
+sample = 60
+min_verdicts = 40
+subject_pattern = '^([0-9]+) descriptions$'
+# Measured at 6 on the 2026-10-28 runner image, with 95 instances between them
+# -- so the instances are concentrated in a handful of files, which is why the
+# floor counts inputs and not instances. 2 leaves headroom for the image
+# moving, the same way the verdict floors do.
+min_exercised = 2
