@@ -77,12 +77,124 @@ jobs:
           set -euo pipefail
           stockbox run -c examples/corpus.toml | tee out.txt
           grep -qF 'every floor met, nothing broken' out.txt
-          for shape in 'json:' 'shell:'; do grep -qF "$shape" out.txt; done
+          for shape in 'json:' 'shell:' 'json-descriptions:'; do
+            grep -qF "$shape" out.txt
+          done
           grep -qF 'floor of 40 verdicts: met' out.txt
           grep -qF 'floor of 10 verdicts: met' out.txt
           # Counts move with the runner image, so assert the shape of the
           # result rather than the numbers: nothing declined, nothing broken.
           grep -qE 'declined 0 +broken 0 +soundness 0' out.txt
+
+      - name: the README's own claim -- a met verdict floor on a vacuous corpus
+        run: |
+          set -euo pipefail
+          # `json-descriptions` is in the shipped example so the headline
+          # sentence of the README is something CI runs. The numbers move with
+          # the image; the gap between them is what gets asserted.
+          stockbox run -c examples/corpus.toml --json > ex.json
+          python3 -c "
+          import json
+          s = next(s for s in json.load(open('ex.json'))['shapes']
+                   if s['name'] == 'json-descriptions')
+          assert s['floor_met'] is True, s
+          assert s['measurement_failed'] is False, 'the pattern read no count'
+          assert s['exercise_floor_met'] is True, s
+          assert 0 < s['exercised'] < s['verdicts'], s
+          assert s['vacuous'] > s['exercised'], s
+          assert s['exercised'] + s['vacuous'] + s['unmeasured'] == s['verdicts'], s
+          print(f\"{s['exercised']} of {s['verdicts']} verdicts exercised\")
+          "
+
+      - name: a vacuous corpus fails although every input got a verdict
+        run: |
+          set -euo pipefail
+          # The failure the exercised floor exists for. awk exits 0 on every
+          # file it can read, so the verdict floor is met by construction and
+          # the only thing left that can fail is the count awk prints.
+          cat > vacuous.toml <<'TOML'
+          [[shape]]
+          name = "nothing-in-them"
+          roots = ["/usr/lib/python3"]
+          names = ["*.json"]
+          command = ["awk", '/no-json-file-has-this-key/ { n++ } END { print n+0 " hits" }', "{path}"]
+          verdict = [0]
+          declined = [2]
+          sample = 20
+          min_verdicts = 10
+          subject_pattern = '^([0-9]+) hits$'
+          min_exercised = 1
+          TOML
+          stockbox run -c vacuous.toml > vacuous.txt && s=0 || s=$?
+          cat vacuous.txt
+          test "$s" -eq 1
+          grep -qF 'floor of 10 verdicts: met' vacuous.txt
+          grep -qF 'floor of 1 exercised: NOT MET' vacuous.txt
+          grep -qF 'held none of what it is about' vacuous.txt
+          grep -qF 'Corpus too thin' vacuous.txt
+
+      - name: a subject_pattern that matches nothing is broken, not thin
+        run: |
+          set -euo pipefail
+          # Exit 3, and no advice about roots: silence from the pattern is
+          # evidence about the pattern, not about the corpus.
+          cat > unmeasured.toml <<'TOML'
+          [[shape]]
+          name = "wrong-pattern"
+          roots = ["/usr/lib/python3"]
+          names = ["*.json"]
+          command = ["awk", 'END { print NR " lines" }', "{path}"]
+          verdict = [0]
+          sample = 20
+          min_verdicts = 10
+          subject_pattern = '^([0-9]+) sprockets$'
+          min_exercised = 1
+          TOML
+          stockbox run -c unmeasured.toml > unmeasured.txt && s=0 || s=$?
+          cat unmeasured.txt
+          test "$s" -eq 3
+          grep -qF 'exercised: not measured' unmeasured.txt
+          grep -qF 'This says nothing about the corpus' unmeasured.txt
+          grep -qF 'Not measured: the subject_pattern for wrong-pattern' unmeasured.txt
+          # `! grep ...` would read as the assertion and could never fail it:
+          # set -e ignores a pipeline inverted with `!`, which is the whole
+          # reason the box job above spells its absence check as an `if`.
+          if grep -qF 'held none of what it is about' unmeasured.txt; then
+            echo 'advice about the corpus, when nothing was measured' >&2
+            exit 1
+          fi
+
+      - name: an awk program in a command is not a traceback
+        run: |
+          set -euo pipefail
+          # This was `KeyError: ' n++ '` from the middle of the corpus walk:
+          # substitution read the whole argument as a format string. Braces
+          # that are not placeholders belong to the checker.
+          cat > braces.toml <<'TOML'
+          [[shape]]
+          name = "awk"
+          roots = ["/usr/lib/python3"]
+          names = ["*.json"]
+          command = ["awk", 'END { print NR " lines" }', "{path}"]
+          verdict = [0]
+          sample = 5
+          min_verdicts = 5
+          subject_pattern = '^([0-9]+) lines$'
+          TOML
+          stockbox run -c braces.toml | tee braces.txt
+          if grep -qF 'Traceback' braces.txt; then
+            echo 'the awk program came back out as a traceback again' >&2
+            exit 1
+          fi
+          grep -qF 'floor of 5 verdicts: met' braces.txt
+          grep -qE 'exercised [0-9]+ of 5 verdicts' braces.txt
+
+          # And a brace-wrapped word that looks like a placeholder and is not.
+          sed 's/{path}/{pathh}/' braces.toml > typo.toml
+          stockbox run -c typo.toml 2> typo.err && s=0 || s=$?
+          cat typo.err
+          test "$s" -eq 2
+          grep -qF 'which is no placeholder' typo.err
 
       - name: roots reports per-root counts without running anything
         run: |
@@ -176,9 +288,14 @@ jobs:
           assert d['exit'] == 0, d['exit']
           assert d['verdicts'] >= 50, d['verdicts']
           names = {s['name'] for s in d['shapes']}
-          assert names == {'json', 'shell'}, names
+          assert names == {'json', 'shell', 'json-descriptions'}, names
           for s in d['shapes']:
               assert s['floor_met'] is True, s
+              assert s['exercise_floor_met'] is True, s
+              assert s['measurement_failed'] is False, s
               assert s['broken_inputs'] == [], s
+          # Only the shape that declared a pattern contributes, so this is not
+          # the verdict total and must not drift into being it.
+          assert 0 < d['exercised'] < d['verdicts'], (d['exercised'], d['verdicts'])
           print('json ok')
           "
