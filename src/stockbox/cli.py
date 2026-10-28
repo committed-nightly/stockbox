@@ -116,6 +116,7 @@ def _cmd_roots(args) -> int:
                 "missing_roots": list(located.missing_roots),
                 "sampled": len(sample(located.files, shape.sample)),
                 "min_verdicts": shape.min_verdicts,
+                "min_exercised": shape.min_exercised,
             }
         )
         lines.append(f"{shape.name}: {located.total} candidates matching {' '.join(shape.names)}")
@@ -128,6 +129,14 @@ def _cmd_roots(args) -> int:
             lines.append(f"    a run would sample {taken}, floor {shape.min_verdicts}")
         else:
             lines.append(f"    a run would use all {taken}, floor {shape.min_verdicts}")
+        if shape.min_exercised is not None:
+            # Counting candidates cannot tell you whether any of them contains
+            # the construct -- only the checker knows that, and `roots` does not
+            # run it. Saying so beats a number that would have to be a guess.
+            lines.append(
+                f"    exercised floor of {shape.min_exercised}: nothing here can"
+                f" predict it, only a run measures it"
+            )
         lines.append("")
 
     if args.json:

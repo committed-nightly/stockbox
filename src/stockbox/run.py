@@ -3,10 +3,16 @@
 The thing being counted is deliberately not "how many files did we find". It
 is "how many files did the checker form an opinion about", because those are
 the only ones that tested anything. See the module docstring in `report`.
+
+A verdict is still not the end of it. The checker read the file and exited 0;
+whether the file held any of what the checker is *about* is a different
+question, and the only thing that can answer it is the checker's own count of
+what it saw. `subject_count` reads that number back out of the output.
 """
 
 from __future__ import annotations
 
+import functools
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +50,36 @@ class Result:
         return f"exit {self.returncode}"
 
 
+def subject_count(shape: Shape, result: Result) -> int | None:
+    """How many instances of its own subject the checker reported for this input.
+
+    `None` is not zero, and the difference is the whole point. Zero is the
+    checker saying "no cache steps in here"; `None` is nobody saying anything,
+    which means the pattern is wrong or the output format moved. Collapsing the
+    two turns a typo'd regex into a report about a thin corpus, and sends you
+    looking for files instead of for your own mistake.
+
+    Every match is summed rather than the first one taken, so a checker that
+    prints a count per file totals correctly. The sum is a reported number and
+    never an asserted one -- the floor counts *inputs*, so a pattern that
+    double-counts inflates this and changes no verdict.
+    """
+    if shape.subject is None:
+        return None
+    values = []
+    for found in shape.subject.findall(result.stdout + "\n" + result.stderr):
+        try:
+            values.append(int(found))
+        except ValueError:
+            # The group matched something that is not a number, so it is not the
+            # count. Falling through to `None` reports that as "no measurement",
+            # which is what it is.
+            continue
+    if not values:
+        return None
+    return sum(values)
+
+
 @dataclass
 class ShapeRun:
     shape: Shape
@@ -57,6 +93,52 @@ class ShapeRun:
     @property
     def verdicts(self) -> int:
         return self.count("verdict")
+
+    @functools.cached_property
+    def subject_counts(self) -> tuple[int | None, ...]:
+        """One entry per verdict, in order. Declined and broken inputs are left
+        out: the checker did not form an opinion, so it has no count to report
+        and counting it as vacuous would blame the corpus twice for one miss."""
+        return tuple(
+            subject_count(self.shape, r) for r in self.results if r.bucket == "verdict"
+        )
+
+    @property
+    def exercised(self) -> int:
+        """Verdicts where the checker saw at least one of its own subject."""
+        return sum(1 for c in self.subject_counts if c)
+
+    @property
+    def vacuous(self) -> int:
+        """Verdicts where it said, in as many words, that there was none."""
+        return sum(1 for c in self.subject_counts if c == 0)
+
+    @property
+    def unmeasured(self) -> int:
+        """Verdicts whose output the pattern did not match."""
+        return sum(1 for c in self.subject_counts if c is None)
+
+    @property
+    def subjects_seen(self) -> int:
+        return sum(c for c in self.subject_counts if c)
+
+    @property
+    def measurement_failed(self) -> bool:
+        """The pattern matched nothing anywhere, so there is no measurement.
+
+        Reported and failed separately from a thin corpus, because the numbers
+        in that case are not small -- they do not exist.
+        """
+        if self.shape.subject is None:
+            return False
+        counts = self.subject_counts
+        return bool(counts) and all(c is None for c in counts)
+
+    @property
+    def exercise_floor_met(self) -> bool:
+        if self.shape.min_exercised is None:
+            return True
+        return self.exercised >= self.shape.min_exercised
 
     @property
     def broken(self) -> list[Result]:
