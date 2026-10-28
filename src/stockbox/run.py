@@ -160,9 +160,22 @@ def build_command(shape: Shape, path: Path) -> tuple[str, ...]:
 
     `{path}` is the whole thing, `{dir}` and `{name}` are the halves, for
     checkers that insist on being run from the input's own directory.
+
+    Three exact tokens replaced, and every other brace left alone. This was
+    `str.format` and `str.format` reads the whole argument: an awk program, a
+    jq filter and a shell brace expansion are all braces that mean nothing to
+    stockbox, and all three came out as a `KeyError` traceback from inside the
+    corpus walk. Nothing in a checker's own command line is stockbox's to
+    parse. A misspelt placeholder is caught at load time instead -- see
+    `config._check_placeholders`.
     """
     fields = {"path": str(path), "dir": str(path.parent), "name": path.name}
-    return tuple(part.format(**fields) for part in shape.command)
+    parts = []
+    for part in shape.command:
+        for key, value in fields.items():
+            part = part.replace("{" + key + "}", value)
+        parts.append(part)
+    return tuple(parts)
 
 
 def run_one(shape: Shape, path: Path) -> Result:

@@ -88,6 +88,42 @@ def _strings(raw: object, where: str) -> tuple[str, ...]:
     return tuple(raw)
 
 
+PLACEHOLDERS = ("path", "dir", "name")
+
+# Something a reader would take for a placeholder: one brace-wrapped word, no
+# spaces, no punctuation. Deliberately narrow, because everything it does not
+# match is passed through to the checker untouched -- `{ n++ }` from an awk
+# program, `{a:1}` from a jq filter, `{1..3}` from a shell.
+_LOOKS_LIKE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _check_placeholders(command: tuple[str, ...], where: str) -> None:
+    """Reject a command that names no input, or misspells the name of one.
+
+    The misspelling half matters because substitution is a plain replace: an
+    unrecognised `{pathh}` is not an error at runtime, it is an argument
+    reading `{pathh}` handed to the checker, which will say something unhelpful
+    about a file of that name. Caught here, where the fix is in view.
+    """
+    used = set()
+    for part in command:
+        for found in _LOOKS_LIKE.findall(part):
+            if found in PLACEHOLDERS:
+                used.add(found)
+            else:
+                raise ConfigError(
+                    f"{where}: command contains {{{found}}}, which is no placeholder "
+                    f"of stockbox's. The three are {{path}}, {{dir}} and {{name}}. "
+                    f"Braces that are not one of those are passed to the checker as "
+                    f"they stand, so this one would have been too."
+                )
+    if not used:
+        raise ConfigError(
+            f"{where}: command names no input. Use {{path}}, or {{name}} with "
+            f"{{dir}}, somewhere in it, or every run checks the same thing."
+        )
+
+
 def _subject(raw: object, where: str) -> re.Pattern[str] | None:
     """Compile `subject_pattern`, the regex that reads the checker's own count.
 
@@ -187,11 +223,7 @@ def parse(text: str, source: str = "<string>") -> Corpus:
         command = _strings(raw.get("command"), f"{where}: command")
         if not command:
             raise ConfigError(f"{where} declares no `command` to run")
-        if not any("{" in part for part in command):
-            raise ConfigError(
-                f"{where}: command names no input. Use {{path}}, or {{name}} with "
-                f"{{dir}}, somewhere in it, or every run checks the same thing."
-            )
+        _check_placeholders(command, where)
 
         min_verdicts = raw.get("min_verdicts")
         if min_verdicts is None:
