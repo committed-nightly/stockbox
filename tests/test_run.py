@@ -471,3 +471,148 @@ def test_an_awk_program_in_a_command_reaches_the_checker_intact(tmp_path):
     assert run.results[0].stdout.strip() == "1 hits"
     assert run.exercised == 1
     assert Outcome(runs=[run]).exit_code == EXIT_OK
+
+
+# --- path patterns, {tree}, and the collapse -------------------------------
+
+
+def tree_corpus(root: Path, layout: dict[str, list[str]]) -> Path:
+    """`{"proj": ["ci.yml", "release.yml"]}` -> proj/.github/workflows/*.yml."""
+    for project, files in layout.items():
+        d = root / project / ".github" / "workflows"
+        d.mkdir(parents=True, exist_ok=True)
+        for name in files:
+            (d / name).write_text("on: push\n")
+    return root
+
+
+def tree_shape(root: Path, command: str, *, extra="", min_verdicts=1):
+    conf = textwrap.dedent(f"""
+        [[shape]]
+        name = "trees"
+        roots = ["{root}"]
+        names = [".github/workflows/*.yml"]
+        command = {command}
+        min_verdicts = {min_verdicts}
+        verdict = [0]
+        timeout = 5
+        {extra}
+    """)
+    shape = parse(conf).shape("trees")
+    return shape, find(shape.roots, shape.names, shape.skip_names)
+
+
+def test_tree_substitutes_the_project_root(tmp_path):
+    root = tree_corpus(tmp_path, {"proj": ["ci.yml"]})
+    shape, located = tree_shape(root, '["echo", "{tree}"]')
+    path = located.files[0]
+    assert build_command(shape, path, located.tree_of(path)) == (
+        "echo",
+        str(root / "proj"),
+    )
+
+
+def test_tree_defaults_to_the_files_directory_when_nobody_passes_one(tmp_path):
+    # Callers that only have a path -- and every corpus written before `{tree}`
+    # existed, where the two are the same thing anyway.
+    root = tree_corpus(tmp_path, {"proj": ["ci.yml"]})
+    shape, located = tree_shape(root, '["echo", "{tree}"]')
+    path = located.files[0]
+    assert build_command(shape, path) == ("echo", str(path.parent))
+
+
+def test_two_files_in_one_tree_are_one_input(tmp_path):
+    root = tree_corpus(tmp_path, {"proj": ["a.yml", "b.yml", "c.yml"]})
+    shape, located = tree_shape(root, '["true", "{tree}"]')
+    run = run_shape(shape, located)
+    assert located.total == 3
+    assert len(run.distinct) == 1
+    assert run.collapsed == 2
+    assert run.verdicts == 1, "three runs of the same command line is one input"
+    assert "2 of them build a command line another input already builds" in text(
+        Outcome(runs=[run])
+    )
+
+
+def test_a_path_scoped_command_collapses_nothing(tmp_path):
+    root = tree_corpus(tmp_path, {"proj": ["a.yml", "b.yml"]})
+    shape, located = tree_shape(root, '["true", "{path}"]', min_verdicts=2)
+    run = run_shape(shape, located)
+    assert run.collapsed == 0
+    assert run.verdicts == 2
+    assert "build a command line" not in text(Outcome(runs=[run]))
+
+
+def test_the_collapse_happens_before_the_sample(tmp_path):
+    # The other order takes the sample from the files and then runs one command
+    # per tree, so a sample of 4 would have made two runs and the floor would
+    # depend on which files the hash picked.
+    root = tree_corpus(tmp_path, {f"p{i}": ["a.yml", "b.yml", "c.yml"] for i in range(5)})
+    shape, located = tree_shape(root, '["true", "{tree}"]', extra="sample = 4", min_verdicts=4)
+    run = run_shape(shape, located)
+    assert located.total == 15
+    assert len(run.distinct) == 5
+    assert len(run.sampled) == 4
+    assert run.verdicts == 4
+    assert run.floor_met
+
+
+def test_the_working_directory_is_the_tree(tmp_path):
+    # A checker that wants to be run from inside the project gets that, and a
+    # basename shape is unaffected because there the tree is the file's own
+    # directory.
+    root = tree_corpus(tmp_path, {"proj": ["ci.yml"]})
+    shape, located = tree_shape(root, '["sh", "-c", "pwd", "--", "{tree}"]')
+    run = run_shape(shape, located)
+    assert run.results[0].stdout.strip() == str((root / "proj").resolve())
+
+
+def test_the_report_counts_trees_only_where_they_are_not_the_directories(tmp_path):
+    root = tree_corpus(tmp_path, {"a": ["x.yml"], "b": ["y.yml", "z.yml"]})
+    shape, located = tree_shape(root, '["true", "{path}"]', min_verdicts=3)
+    rendered = text(Outcome(runs=[run_shape(shape, located)]))
+    assert "3 candidates in 2 trees" in rendered
+
+    # And the same corpus matched by basename says nothing about trees, where
+    # the count would be its directories and would read as a claim about
+    # projects.
+    shape2 = parse(
+        textwrap.dedent(f"""
+            [[shape]]
+            name = "flat"
+            roots = ["{root}"]
+            names = ["*.yml"]
+            command = ["true", "{{path}}"]
+            min_verdicts = 3
+        """)
+    ).shape("flat")
+    located2 = find(shape2.roots, shape2.names, shape2.skip_names)
+    assert located2.total == 3
+    # Its tree count is 2, and that is the number not to print. Asserted
+    # against the candidates line only: tmp_path carries the test's own name,
+    # so a bare `"trees" not in rendered` could never fail.
+    assert located2.tree_count == 2
+    headline = text(Outcome(runs=[run_shape(shape2, located2)])).splitlines()[0]
+    assert headline.endswith("candidates (" + str(root) + "=3)"), headline
+
+
+def test_json_carries_the_tree_and_collapse_counts(tmp_path):
+    import json as _json
+
+    root = tree_corpus(tmp_path, {"a": ["x.yml", "y.yml"], "b": ["z.yml"]})
+    shape, located = tree_shape(root, '["true", "{tree}"]', min_verdicts=2)
+    payload = _json.loads(as_json(Outcome(runs=[run_shape(shape, located)])))["shapes"][0]
+    assert payload["candidates"] == 3
+    assert payload["trees"] == 2
+    assert payload["distinct"] == 2
+    assert payload["collapsed"] == 1
+    assert payload["sampled"] == 2
+    assert payload["candidates"] - payload["collapsed"] == payload["distinct"]
+
+
+def test_a_dry_run_prints_the_tree_it_would_pass(tmp_path):
+    root = tree_corpus(tmp_path, {"proj": ["a.yml", "b.yml"]})
+    shape, located = tree_shape(root, '["coldcache", "{tree}"]')
+    rendered = text(Outcome(runs=[run_shape(shape, located, dry_run=True)]), dry_run=True)
+    assert f"coldcache {root / 'proj'}" in rendered
+    assert "Nothing was run" in rendered
