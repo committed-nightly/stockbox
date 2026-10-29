@@ -77,7 +77,7 @@ jobs:
           set -euo pipefail
           stockbox run -c examples/corpus.toml | tee out.txt
           grep -qF 'every floor met, nothing broken' out.txt
-          for shape in 'json:' 'shell:' 'json-descriptions:'; do
+          for shape in 'json:' 'shell:' 'json-descriptions:' 'workflow-trees:'; do
             grep -qF "$shape" out.txt
           done
           grep -qF 'floor of 40 verdicts: met' out.txt
@@ -85,6 +85,78 @@ jobs:
           # Counts move with the runner image, so assert the shape of the
           # result rather than the numbers: nothing declined, nothing broken.
           grep -qE 'declined 0 +broken 0 +soundness 0' out.txt
+
+      - name: a names pattern with a directory in it, and {tree}
+        run: |
+          set -euo pipefail
+          # `test -d {tree}/.github` is the assertion: 0 only where {tree} is
+          # the directory holding .github, and 1 -- undeclared, so broken, so
+          # exit 3 -- anywhere it is not. Nothing here can pass vacuously.
+          cat > trees.toml <<'TOML'
+          [[shape]]
+          name = "workflow-trees"
+          roots = [
+              "/usr/lib/google-cloud-sdk/platform",
+              "/usr/local/lib/node_modules",
+              "/etc/skel/.nvm",
+              "/usr/local/share/vcpkg",
+              "/usr/share/miniconda/pkgs",
+          ]
+          names = [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+          command = ["test", "-d", "{tree}/.github"]
+          verdict = [0]
+          sample = false
+          min_verdicts = 10
+          TOML
+          stockbox run -c trees.toml --json > trees.json
+          stockbox run -c trees.toml | tee trees.txt
+          grep -qE 'candidates in [0-9]+ trees' trees.txt
+          grep -qF 'build a command line another input already builds' trees.txt
+          python3 -c "
+          import json
+          s = json.load(open('trees.json'))['shapes'][0]
+          # Every number read off the image, so an image bump moves them and
+          # none of these asserts one. What is asserted is that the corpus the
+          # old basename matching could not express is there, and is counted by
+          # tree.
+          assert s['candidates'] > s['trees'] > 10, s
+          assert s['distinct'] == s['trees'], s
+          assert s['collapsed'] == s['candidates'] - s['trees'], s
+          assert s['verdicts'] == s['distinct'], 'a {tree} was not a project root'
+          assert s['broken'] == 0 and s['broken_inputs'] == [], s
+          print(f\"{s['candidates']} files, {s['trees']} trees, all {s['verdicts']} verdicts\")
+          "
+
+          # The spelling that used to be the only one available finds an order
+          # of magnitude more of the wrong thing. This is the bug, measured.
+          sed 's|".github/workflows/\*|"*|g' trees.toml > loose.toml
+          stockbox roots -c loose.toml --json > loose.json
+          python3 -c "
+          import json
+          tight = json.load(open('trees.json'))['shapes'][0]['candidates']
+          loose = json.load(open('loose.json'))['shapes'][0]['candidates']
+          assert loose > tight * 5, (loose, tight)
+          print(f'{tight} workflow files among {loose} *.yml')
+          "
+
+      # Quoted: a plain scalar starting with `*` is a YAML alias, and the whole
+      # file fails to parse. GitHub would have reported that as the workflow
+      # not existing.
+      - name: '`**` in a names pattern is rejected rather than half-working'
+        run: |
+          set -euo pipefail
+          cat > stars.toml <<'TOML'
+          [[shape]]
+          name = "stars"
+          roots = ["/etc"]
+          names = [".github/**/*.yml"]
+          command = ["true", "{path}"]
+          min_verdicts = 1
+          TOML
+          stockbox run -c stars.toml 2> stars.err && s=0 || s=$?
+          cat stars.err
+          test "$s" -eq 2
+          grep -qF '`**` is not a wildcard here' stars.err
 
       - name: the README's own claim -- a met verdict floor on a vacuous corpus
         run: |
@@ -288,7 +360,7 @@ jobs:
           assert d['exit'] == 0, d['exit']
           assert d['verdicts'] >= 50, d['verdicts']
           names = {s['name'] for s in d['shapes']}
-          assert names == {'json', 'shell', 'json-descriptions'}, names
+          assert names == {'json', 'shell', 'json-descriptions', 'workflow-trees'}, names
           for s in d['shapes']:
               assert s['floor_met'] is True, s
               assert s['exercise_floor_met'] is True, s

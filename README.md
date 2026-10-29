@@ -103,6 +103,57 @@ subject_pattern = '^([0-9]+) lines never used'
 min_exercised = 5
 ```
 
+## When the directory is the discriminator
+
+Sometimes what makes a file the shape you want is not its name. The six directories on an
+`ubuntu-latest` runner that hold vendored project trees have 120 real GitHub Actions workflow
+files between them, in 47 projects — and 738 files called `*.yml` or `*.yaml`. The only thing
+that tells the 120 from the other 618 is the `.github/workflows/` above them. So a `names`
+pattern is matched against as many trailing path components as it has:
+
+```toml
+names = [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+```
+
+A pattern with one component is a basename match, which is all `names` ever did. A `*` matches
+within one component and never across a `/`, so the component count is the depth you wrote.
+Patterns are matched against the *end* of a path and never anchored to the root, which means
+`.github/workflows/*.yml` works at any depth and slicing your roots differently cannot change
+what matches. There is no `**`: a pattern claims a fixed number of components, so a corpus file
+asking for one is rejected rather than quietly matching a single directory.
+
+Checkers that work on this kind of corpus usually want the project, not the file. `{tree}` is the
+directory the pattern began matching at — the one holding `.github` above — so this is the whole
+shape:
+
+```toml
+[[shape]]
+name = "workflows"
+roots = ["/usr/lib/google-cloud-sdk/platform", "/usr/local/lib/node_modules"]
+names = [".github/workflows/*.yml"]
+command = ["coldcache", "{tree}"]
+verdict = [0, 1]
+min_verdicts = 10
+```
+
+For a basename pattern `{tree}` is `{dir}`, so nothing written before it existed has changed. The
+working directory follows `{tree}` for the same reason.
+
+**Two inputs that build the same command line are one input.** The five of those roots whose
+paths carry no version number hold 81 files in 30 trees, so `coldcache {tree}` has 30 things to
+say and 51 of the files would be a repeat of a run already made:
+
+```
+workflows: 81 candidates in 30 trees (/usr/lib/google-cloud-sdk/platform=36, ...)
+    51 of them build a command line another input already builds, and are not run again -- 30 inputs left
+    ran all 30: verdict 30   declined 0   broken 0   soundness 0
+```
+
+Reporting 81 verdicts there would be this tool inflating exactly the number it exists to keep
+honest. The collapse happens before the sample, so `sample = 20` means twenty runs and not twenty
+files. It is not about `{tree}`: a command naming only `{dir}` has always had the same problem,
+one Makefile per directory rather than one per tree, and until now it was always counted wrong.
+
 Then, before you write any of that, find out whether the files are even there:
 
 ```
@@ -162,7 +213,8 @@ A stock `ubuntu-latest` runner has 119 real GitHub Actions workflow files on it,
 trees vendored inside the Julia standard library, the Google Cloud SDK, `node_modules`, nvm,
 vcpkg and miniconda. Written by strangers for their own projects, which is exactly what you want.
 
-Four checkers in this org read workflow files. Pointed at those 47 trees on 2026-10-28:
+Four checkers in this org read workflow files. Pointed at those 47 trees on 2026-10-28, with a
+shell loop, because `names` could not express the corpus until the section above existed:
 
 | checker | verdicts | trees where it saw its own subject |
 | --- | --- | --- |
@@ -190,10 +242,26 @@ in its text output, none in `--json` — so there is no pattern to write and no 
 checker that does not report its own denominator cannot be measured this way, which is a reason
 to report one.
 
+That table is now a `corpus.toml` rather than a shell loop. Re-run on 2026-10-29 as one, over the
+five roots whose paths do not carry a version number:
+
+```
+coldcache-trees: 81 candidates in 30 trees (...)
+    51 of them build a command line another input already builds, and are not run again -- 30 inputs left
+    ran all 30: verdict 30   declined 0   broken 0   soundness 0
+    floor of 10 verdicts: met
+    exercised 1 of 30 verdicts (6 instances of the subject seen)
+```
+
+Thirty verdicts and one of them had anything to look at. The image had moved — a julia version
+bump took 39 files and their trees with it — which is its own argument for measuring rather than
+quoting: every number in this file is a date.
+
 ## Try the shipped example
 
-Three shapes, three checkers already on a stock Ubuntu runner, inputs that come with the
-distribution. The third one is the vacuous-corpus case above, as it actually runs:
+Four shapes, four checkers already on a stock Ubuntu runner, inputs that come with the
+distribution. The third is the vacuous-corpus case above as it actually runs, and the fourth is
+the path-pattern and `{tree}` case:
 
 ```
 git clone https://github.com/committed-nightly/stockbox && cd stockbox
@@ -215,7 +283,7 @@ working directory set to the input's own directory. Before you add a shape:
 - Prefer the parse-only flag if the checker has one. `bash -n` instead of `bash`.
 - `timeout` is per input and defaults to 30 seconds, so one pathological file cannot hang CI.
 
-All three shapes in `examples/corpus.toml` use checkers that only read.
+All four shapes in `examples/corpus.toml` use checkers that only read.
 
 ## Details worth knowing
 
@@ -235,11 +303,11 @@ reproduces; a different box does not, because the file list is not the same eith
 **An unlisted exit code is broken, not ignored.** Only `verdict` and `declined` are codes you
 have thought about. If the checker starts exiting 4, you hear about it.
 
-**Braces in a `command` are yours, not stockbox's.** `{path}`, `{dir}` and `{name}` are replaced;
-every other brace is passed through untouched, so an awk program, a jq filter and a shell brace
-expansion all work as written and need no escaping. A brace-wrapped word that *isn't* one of the
-three — `{pathh}` — is rejected when the corpus file loads, because a plain replacement would
-otherwise hand the checker the literal string and let it complain about a missing file.
+**Braces in a `command` are yours, not stockbox's.** `{path}`, `{dir}`, `{name}` and `{tree}` are
+replaced; every other brace is passed through untouched, so an awk program, a jq filter and a
+shell brace expansion all work as written and need no escaping. A brace-wrapped word that *isn't*
+one of the four — `{pathh}` — is rejected when the corpus file loads, because a plain replacement
+would otherwise hand the checker the literal string and let it complain about a missing file.
 
 **`soundness` is always broken**, even if you also list the code as a verdict. A checker reporting
 that its own model was wrong has not passed.
