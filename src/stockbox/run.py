@@ -86,6 +86,15 @@ class ShapeRun:
     located: Located
     sampled: tuple[Path, ...]
     results: list[Result]
+    # Inputs left after `collapse`, and how many it dropped. The sample is
+    # taken from these, so a shape with 81 files and 33 distinct commands
+    # samples 33 and not 81.
+    distinct: tuple[Path, ...] = ()
+    collapsed: int = 0
+
+    def __post_init__(self):
+        if not self.distinct:
+            self.distinct = self.sampled
 
     def count(self, bucket: str) -> int:
         return sum(1 for r in self.results if r.bucket == bucket)
@@ -155,13 +164,16 @@ class ShapeRun:
         return self.verdicts >= self.shape.min_verdicts
 
 
-def build_command(shape: Shape, path: Path) -> tuple[str, ...]:
+def build_command(shape: Shape, path: Path, tree: Path | None = None) -> tuple[str, ...]:
     """Substitute the input into the command.
 
     `{path}` is the whole thing, `{dir}` and `{name}` are the halves, for
-    checkers that insist on being run from the input's own directory.
+    checkers that insist on being run from the input's own directory. `{tree}`
+    is the directory the `names` pattern began matching at -- the project root
+    above a `.github/workflows/ci.yml`, for a checker that takes a repository
+    rather than a file. For a basename pattern it is `{dir}`.
 
-    Three exact tokens replaced, and every other brace left alone. This was
+    Four exact tokens replaced, and every other brace left alone. This was
     `str.format` and `str.format` reads the whole argument: an awk program, a
     jq filter and a shell brace expansion are all braces that mean nothing to
     stockbox, and all three came out as a `KeyError` traceback from inside the
@@ -169,7 +181,12 @@ def build_command(shape: Shape, path: Path) -> tuple[str, ...]:
     parse. A misspelt placeholder is caught at load time instead -- see
     `config._check_placeholders`.
     """
-    fields = {"path": str(path), "dir": str(path.parent), "name": path.name}
+    fields = {
+        "path": str(path),
+        "dir": str(path.parent),
+        "name": path.name,
+        "tree": str(tree if tree is not None else path.parent),
+    }
     parts = []
     for part in shape.command:
         for key, value in fields.items():
@@ -178,8 +195,31 @@ def build_command(shape: Shape, path: Path) -> tuple[str, ...]:
     return tuple(parts)
 
 
-def run_one(shape: Shape, path: Path) -> Result:
-    command = build_command(shape, path)
+def collapse(shape: Shape, located: Located) -> tuple[tuple[Path, ...], int]:
+    """One input per distinct command line, and how many that dropped.
+
+    Two inputs whose substituted command comes out identical are not two
+    inputs. `coldcache {tree}` over 81 workflow files in 33 project trees is 33
+    runs and 48 repeats of a run already made, and counting the repeats as
+    verdicts inflates the one number this tool exists to keep honest.
+
+    Nothing about `{tree}` specifically: a command that names only `{dir}` has
+    always had the same problem, one Makefile per directory rather than one per
+    tree, and it has always been counted wrong. The rule is about the command
+    line because that is the whole of what the checker sees.
+
+    First path in sorted order represents its command, so the choice is stable
+    across runs on the same machine, like the sample is.
+    """
+    seen: dict[tuple[str, ...], Path] = {}
+    for path in located.files:
+        seen.setdefault(build_command(shape, path, located.tree_of(path)), path)
+    kept = tuple(sorted(seen.values()))
+    return kept, len(located.files) - len(kept)
+
+
+def run_one(shape: Shape, path: Path, tree: Path | None = None) -> Result:
+    command = build_command(shape, path, tree)
     try:
         proc = subprocess.run(
             command,
@@ -187,7 +227,10 @@ def run_one(shape: Shape, path: Path) -> Result:
             text=True,
             errors="replace",
             timeout=shape.timeout,
-            cwd=str(path.parent),
+            # The tree, not the file's own directory, for a checker that wants
+            # to be run from inside the project. Identical for a basename
+            # pattern, which is every shape written before `{tree}` existed.
+            cwd=str(tree if tree is not None else path.parent),
         )
     except subprocess.TimeoutExpired:
         return Result(
@@ -229,12 +272,23 @@ def run_shape(
     on_result=None,
 ) -> ShapeRun:
     limit = shape.sample if sample_limit is ... else sample_limit
-    sampled = sample(located.files, limit)
+    # Collapse before sampling, not after. The other order takes 50 files from
+    # five trees and runs five commands, so the sample size stops meaning
+    # anything and the floor is measured against whatever the hash gave you.
+    distinct, collapsed = collapse(shape, located)
+    sampled = sample(distinct, limit)
     results: list[Result] = []
     if not dry_run:
         for path in sampled:
-            result = run_one(shape, path)
+            result = run_one(shape, path, located.tree_of(path))
             results.append(result)
             if on_result is not None:
                 on_result(result)
-    return ShapeRun(shape=shape, located=located, sampled=sampled, results=results)
+    return ShapeRun(
+        shape=shape,
+        located=located,
+        sampled=sampled,
+        results=results,
+        distinct=distinct,
+        collapsed=collapsed,
+    )

@@ -78,25 +78,31 @@ def text(outcome: Outcome, *, dry_run: bool = False) -> str:
     for run in outcome.runs:
         shape = run.shape
         roots = ", ".join(f"{root}={n}" for root, n in shape_root_items(run))
-        out.append(f"{shape.name}: {run.located.total} candidates ({roots})")
+        out.append(f"{shape.name}: {run.located.total} candidates{_trees(run)} ({roots})")
         if run.located.missing_roots:
             out.append(
                 f"    no such directory: {', '.join(run.located.missing_roots)}"
                 f" -- nothing from there is in the corpus"
+            )
+        if run.collapsed:
+            out.append(
+                f"    {run.collapsed} of them build a command line another input"
+                f" already builds, and are not run again -- {len(run.distinct)} inputs left"
             )
         if dry_run:
             out.append(f"    would run {len(run.sampled)} of them, starting with:")
             from .run import build_command
 
             for path in run.sampled[:MAX_SHOWN]:
-                out.append(f"      {_shell(build_command(shape, path))}")
+                tree = run.located.tree_of(path)
+                out.append(f"      {_shell(build_command(shape, path, tree))}")
             if len(run.sampled) > MAX_SHOWN:
                 out.append(f"      ... and {len(run.sampled) - MAX_SHOWN} more")
             continue
 
         sampled_note = (
             f"sampled {len(run.sampled)}"
-            if len(run.sampled) < run.located.total
+            if len(run.sampled) < len(run.distinct)
             else f"ran all {len(run.sampled)}"
         )
         counts = (
@@ -278,14 +284,39 @@ def shape_root_items(run: ShapeRun) -> list[tuple[str, int]]:
     return list(run.located.per_root.items())
 
 
+def trees_note(located) -> str:
+    """` in N trees`, for a tree-scoped shape only.
+
+    A basename shape has a tree count too -- its distinct directories -- and
+    printing it would be a true number that reads as a claim about projects.
+    """
+    if not located.tree_scoped:
+        return ""
+    return f" in {located.tree_count} trees"
+
+
+def _trees(run: ShapeRun) -> str:
+    return trees_note(run.located)
+
+
 def as_json(outcome: Outcome) -> str:
     payload = {
         "shapes": [
             {
                 "name": run.shape.name,
                 "candidates": run.located.total,
+                # Distinct `{tree}` values, which for a basename shape is its
+                # distinct directories. Null rather than that number, so
+                # nothing reads it as a count of projects.
+                "trees": run.located.tree_count if run.located.tree_scoped else None,
                 "per_root": run.located.per_root,
                 "missing_roots": list(run.located.missing_roots),
+                # `distinct` is what the sample is drawn from, and `candidates`
+                # minus `collapsed` is it. A reader comparing `sampled` with
+                # `candidates` on a tree-scoped shape would otherwise conclude
+                # the sample limit had bitten when it had not.
+                "distinct": len(run.distinct),
+                "collapsed": run.collapsed,
                 "sampled": len(run.sampled),
                 "verdicts": run.verdicts,
                 "declined": run.count("declined"),

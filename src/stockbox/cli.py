@@ -14,8 +14,8 @@ from pathlib import Path
 from . import __version__
 from .config import ConfigError, load
 from .locate import find, sample
-from .report import EXIT_USAGE, Outcome, as_json, text
-from .run import run_shape
+from .report import EXIT_USAGE, Outcome, as_json, text, trees_note
+from .run import collapse, run_shape
 
 DEFAULT_CONFIG = "corpus.toml"
 
@@ -107,25 +107,40 @@ def _cmd_roots(args) -> int:
     lines = []
     for shape in shapes:
         located = find(shape.roots, shape.names, shape.skip_names)
+        # `roots` is the command you run before you have a floor to write, so
+        # the number it predicts has to be the number a run will use -- which
+        # is the distinct command lines, not the files.
+        distinct, dropped = collapse(shape, located)
+        taken = len(sample(distinct, shape.sample))
         payload.append(
             {
                 "name": shape.name,
                 "names": list(shape.names),
                 "candidates": located.total,
+                "trees": located.tree_count if located.tree_scoped else None,
                 "per_root": located.per_root,
                 "missing_roots": list(located.missing_roots),
-                "sampled": len(sample(located.files, shape.sample)),
+                "distinct": len(distinct),
+                "collapsed": dropped,
+                "sampled": taken,
                 "min_verdicts": shape.min_verdicts,
                 "min_exercised": shape.min_exercised,
             }
         )
-        lines.append(f"{shape.name}: {located.total} candidates matching {' '.join(shape.names)}")
+        lines.append(
+            f"{shape.name}: {located.total} candidates{trees_note(located)}"
+            f" matching {' '.join(shape.names)}"
+        )
         for root, n in located.per_root.items():
             note = "  (no such directory)" if root in located.missing_roots else ""
             flag = "" if n else "   <- contributes nothing"
             lines.append(f"    {n:>7}  {root}{note}{flag}")
-        taken = len(sample(located.files, shape.sample))
-        if taken < located.total:
+        if dropped:
+            lines.append(
+                f"    {dropped} build a command line another candidate already"
+                f" builds -- {len(distinct)} inputs a run would actually make"
+            )
+        if taken < len(distinct):
             lines.append(f"    a run would sample {taken}, floor {shape.min_verdicts}")
         else:
             lines.append(f"    a run would use all {taken}, floor {shape.min_verdicts}")
