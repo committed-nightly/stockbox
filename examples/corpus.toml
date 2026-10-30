@@ -55,10 +55,14 @@ min_exercised = 2
 
 [[shape]]
 name = "workflow-trees"
-# The shape a basename pattern cannot express. There are 81 real GitHub Actions
-# workflow files on this image and 9,718 `*.yml`; the only thing that tells
-# them apart is the `.github/workflows/` above them, which is why `names`
-# matches path components and not just the filename.
+# The shape a basename pattern cannot express. Under the five roots below,
+# measured on the 2026-10-30 runner image: 81 real GitHub Actions workflow
+# files, against 679 files called `*.yml` or `*.yaml`. The only thing that
+# tells the 81 from the other 598 is the `.github/workflows/` above them,
+# which is why `names` matches path components and not just the filename.
+# Both patterns below are counted in that 679, so the comparison is the one
+# this shape actually makes; `tests/test_box.py` asserts the ratio rather
+# than either number, so the image can move without this file lying.
 #
 # The julia stdlib has 39 more, under `/usr/local/julia1.13.2/share`. Left out
 # on purpose: a version-numbered root is a root that rots, and a root that is

@@ -107,9 +107,10 @@ min_exercised = 5
 
 Sometimes what makes a file the shape you want is not its name. The six directories on an
 `ubuntu-latest` runner that hold vendored project trees have 120 real GitHub Actions workflow
-files between them, in 47 projects — and 738 files called `*.yml` or `*.yaml`. The only thing
-that tells the 120 from the other 618 is the `.github/workflows/` above them. So a `names`
-pattern is matched against as many trailing path components as it has:
+files between them, in 47 projects — and 738 files called `*.yml` or `*.yaml`, measured on the
+2026-10-30 runner image. The only thing that tells the 120 from the other 618 is the
+`.github/workflows/` above them. So a `names` pattern is matched against as many trailing path
+components as it has:
 
 ```toml
 names = [".github/workflows/*.yml", ".github/workflows/*.yaml"]

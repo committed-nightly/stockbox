@@ -13,10 +13,18 @@ against.
 
 A `names` pattern is matched against as many trailing path components as it
 has, not against the basename. The discriminator for the shape you want is
-often a directory and not a filename -- there are 81 GitHub Actions workflow
-files on this runner and 9,718 `*.yml`, and the only thing that tells them
-apart is the `.github/workflows/` above them. A pattern with one component is
-a basename match, which is what every pattern was before this existed.
+often a directory and not a filename: on a runner image the vendored project
+trees hold several times as many `*.yml` files as they do real GitHub Actions
+workflows, and the only thing that tells the two apart is the
+`.github/workflows/` above them. A pattern with one component is a basename
+match, which is what every pattern was before this existed.
+
+No count is quoted for that. It is a property of whichever image you are on,
+nothing in this module could notice it going stale, and the figure an earlier
+draft of this docstring carried was wrong by more than an order of magnitude.
+The measured pair is in README.md under "When the directory is the
+discriminator", dated and next to the roots it was measured over, and
+`tests/test_box.py` asserts the ratio on whatever machine runs the tests.
 """
 
 from __future__ import annotations
