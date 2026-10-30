@@ -72,6 +72,61 @@ def test_rejects(body, fragment):
     assert fragment in str(exc.value)
 
 
+NAMES_SHAPE = """
+[[shape]]
+name = "s"
+roots = ["/etc"]
+names = [%s]
+command = ["a", "{path}"]
+min_verdicts = 1
+"""
+
+
+@pytest.mark.parametrize(
+    "pattern, fragment",
+    [
+        # All three of these looked like they would work while the workflow
+        # corpus in logbook#56 was being written.
+        ('".github/**/*.yml"', "`**` is not a wildcard here"),
+        ('"/etc/*.conf"', "a leading / reads as anchored"),
+        ('".github/workflows/"', "a trailing / reads as a directory"),
+        ('".github//workflows/*.yml"', "empty path component"),
+        ('""', "is empty"),
+    ],
+)
+def test_a_names_pattern_that_cannot_mean_what_it_looks_like_is_rejected(
+    pattern, fragment
+):
+    with pytest.raises(ConfigError) as exc:
+        parse(NAMES_SHAPE % pattern)
+    assert fragment in str(exc.value)
+
+
+def test_the_rejection_suggests_the_spelling_that_works():
+    with pytest.raises(ConfigError) as exc:
+        parse(NAMES_SHAPE % '"/.github/workflows/*.yml"')
+    assert "'.github/workflows/*.yml'" in str(exc.value)
+
+
+def test_skip_names_is_held_to_the_same_rules():
+    body = """
+    [[shape]]
+    name = "s"
+    roots = ["/etc"]
+    names = ["*.yml"]
+    skip_names = ["vendor/**/*.yml"]
+    command = ["a", "{path}"]
+    min_verdicts = 1
+    """
+    with pytest.raises(ConfigError, match=r"skip_names entry"):
+        parse(body)
+
+
+def test_a_path_pattern_is_kept_as_written():
+    shape = parse(NAMES_SHAPE % '".github/workflows/*.yml"').shape("s")
+    assert shape.names == (".github/workflows/*.yml",)
+
+
 def test_duplicate_shape_names_are_an_error():
     with pytest.raises(ConfigError, match="defined twice"):
         parse(GOOD + GOOD)
@@ -225,6 +280,20 @@ def test_a_command_may_contain_braces_that_are_not_placeholders():
         """
     ).shape("s")
     assert shape.command[1] == '/x/ { n++ } END { print n+0 " hits" }'
+
+
+def test_tree_is_a_placeholder_and_names_an_input():
+    shape = parse(
+        """
+        [[shape]]
+        name = "s"
+        roots = ["/etc"]
+        names = [".github/workflows/*.yml"]
+        command = ["coldcache", "{tree}"]
+        min_verdicts = 1
+        """
+    ).shape("s")
+    assert shape.command == ("coldcache", "{tree}")
 
 
 def test_a_misspelt_placeholder_is_caught_at_load_time():

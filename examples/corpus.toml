@@ -1,8 +1,8 @@
-# A worked corpus file, using two checkers that are already on a stock Ubuntu
+# A worked corpus file, using checkers that are already on a stock Ubuntu
 # runner and real inputs that ship with the distribution. `stockbox run
 # -c examples/corpus.toml` from a clone should pass.
 #
-# Both checkers here only read their input. That is deliberate: see the safety
+# Every checker here only reads its input. That is deliberate: see the safety
 # section of the README before you point a shape at a checker that runs one.
 
 [[shape]]
@@ -52,3 +52,53 @@ subject_pattern = '^([0-9]+) descriptions$'
 # floor counts inputs and not instances. 2 leaves headroom for the image
 # moving, the same way the verdict floors do.
 min_exercised = 2
+
+[[shape]]
+name = "workflow-trees"
+# The shape a basename pattern cannot express. Under the five roots below,
+# measured on the 2026-10-30 runner image: 81 real GitHub Actions workflow
+# files, against 679 files called `*.yml` or `*.yaml`. The only thing that
+# tells the 81 from the other 598 is the `.github/workflows/` above them,
+# which is why `names` matches path components and not just the filename.
+# Both patterns below are counted in that 679, so the comparison is the one
+# this shape actually makes; `tests/test_box.py` asserts the ratio rather
+# than either number, so the image can move without this file lying.
+#
+# The julia stdlib has 39 more, under `/usr/local/julia1.13.2/share`. Left out
+# on purpose: a version-numbered root is a root that rots, and a root that is
+# not there is reported rather than fatal, so it would quietly contribute
+# nothing after the next image bump.
+roots = [
+    "/usr/lib/google-cloud-sdk/platform",
+    "/usr/local/lib/node_modules",
+    "/etc/skel/.nvm",
+    "/usr/local/share/vcpkg",
+    "/usr/share/miniconda/pkgs",
+]
+names = [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+# `{tree}` is the directory the pattern started matching at -- the project root
+# above `.github`, which is what a checker that takes a repository wants. The
+# 81 files are in 30 trees, so 51 of them build a command line another input
+# already built and are not run twice: 30 inputs, not 81. `stockbox run` says
+# so in its second line.
+#
+# A stand-in, again, for a checker that reports its own denominator: this one
+# counts the reused actions across every workflow in the tree. `sh -c` is here
+# for the glob, and `exec` so the exit status is awk's own. The braces in the
+# awk program are the checker's and are passed through untouched.
+command = [
+    "sh",
+    "-c",
+    '''exec awk '/^[[:space:]]*- *uses:/ { n++ } END { print n+0 " steps reused" }' "$1"/.github/workflows/*''',
+    "--",
+    "{tree}",
+]
+verdict = [0]
+declined = [2]
+sample = false
+min_verdicts = 10
+subject_pattern = '^([0-9]+) steps reused$'
+# Measured on the 2026-10-29 image: 30 verdicts, 23 of them exercised, 124
+# instances. The seven vacuous ones are projects whose workflows run their own
+# scripts and reuse no action at all.
+min_exercised = 5

@@ -88,7 +88,7 @@ def _strings(raw: object, where: str) -> tuple[str, ...]:
     return tuple(raw)
 
 
-PLACEHOLDERS = ("path", "dir", "name")
+PLACEHOLDERS = ("path", "dir", "name", "tree")
 
 # Something a reader would take for a placeholder: one brace-wrapped word, no
 # spaces, no punctuation. Deliberately narrow, because everything it does not
@@ -113,15 +113,50 @@ def _check_placeholders(command: tuple[str, ...], where: str) -> None:
             else:
                 raise ConfigError(
                     f"{where}: command contains {{{found}}}, which is no placeholder "
-                    f"of stockbox's. The three are {{path}}, {{dir}} and {{name}}. "
-                    f"Braces that are not one of those are passed to the checker as "
-                    f"they stand, so this one would have been too."
+                    f"of stockbox's. The four are {{path}}, {{dir}}, {{name}} and "
+                    f"{{tree}}. Braces that are not one of those are passed to the "
+                    f"checker as they stand, so this one would have been too."
                 )
     if not used:
         raise ConfigError(
             f"{where}: command names no input. Use {{path}}, or {{name}} with "
             f"{{dir}}, somewhere in it, or every run checks the same thing."
         )
+
+
+def _check_names(names: tuple[str, ...], key: str, where: str) -> None:
+    """Reject a `names` pattern whose components cannot mean what it looks like.
+
+    A pattern is matched against as many trailing path components as it has, so
+    the component count is load bearing and the spellings that imply something
+    else have to be errors rather than near misses. All three of these looked
+    like they would work while writing the workflow corpus in logbook#56.
+    """
+    for pattern in names:
+        spot = f"{where}: {key} entry {pattern!r}"
+        if not pattern:
+            raise ConfigError(f"{spot} is empty")
+        if "**" in pattern:
+            raise ConfigError(
+                f"{spot}: `**` is not a wildcard here. A pattern matches exactly as "
+                f"many trailing path components as it has, and `**` would match one "
+                f"of them like `*` does. Write the depth you mean -- "
+                f"'.github/workflows/*.yml' -- or match the basename alone with "
+                f"'*.yml'."
+            )
+        if pattern.startswith("/"):
+            raise ConfigError(
+                f"{spot}: a leading / reads as anchored to the root, and patterns are "
+                f"matched against the end of a path, never the start. Drop it: "
+                f"'{pattern.lstrip('/')}' matches at any depth under every root."
+            )
+        if pattern.endswith("/"):
+            raise ConfigError(
+                f"{spot}: a trailing / reads as a directory, and the corpus is files. "
+                f"Name what you want inside it -- '{pattern}*'."
+            )
+        if "//" in pattern:
+            raise ConfigError(f"{spot} has an empty path component")
 
 
 def _subject(raw: object, where: str) -> re.Pattern[str] | None:
@@ -219,6 +254,10 @@ def parse(text: str, source: str = "<string>") -> Corpus:
         names = _strings(raw.get("names"), f"{where}: names")
         if not names:
             raise ConfigError(f"{where} declares no `names` to match")
+        _check_names(names, "names", where)
+
+        skip_names = _strings(raw.get("skip_names", []), f"{where}: skip_names")
+        _check_names(skip_names, "skip_names", where)
 
         command = _strings(raw.get("command"), f"{where}: command")
         if not command:
@@ -282,7 +321,7 @@ def parse(text: str, source: str = "<string>") -> Corpus:
                 min_verdicts=min_verdicts,
                 sample=sample,
                 timeout=float(timeout),
-                skip_names=_strings(raw.get("skip_names", []), f"{where}: skip_names"),
+                skip_names=skip_names,
                 subject=subject,
                 min_exercised=min_exercised,
             )
