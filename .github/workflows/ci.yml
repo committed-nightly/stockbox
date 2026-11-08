@@ -253,13 +253,72 @@ jobs:
           min_verdicts = 5
           subject_pattern = '^([0-9]+) lines$'
           TOML
-          stockbox run -c braces.toml | tee braces.txt
-          if grep -qF 'Traceback' braces.txt; then
-            echo 'the awk program came back out as a traceback again' >&2
+          # The two streams are kept apart on purpose, because the crash this
+          # step is named after only ever appears on one of them. stockbox's
+          # own crash is an unhandled exception: Python writes `Traceback` to
+          # *stderr* and exits non-zero. A *checker's* crash is a `broken`
+          # result, and stockbox quotes the checker's first stderr line into
+          # the report on *stdout* -- so a `Traceback` on stdout is stockbox
+          # working, not stockbox failing. Both controls are below.
+          #
+          # This read `stockbox run -c braces.toml | tee braces.txt` and then
+          # grepped braces.txt, which could match neither (logbook#64). Put
+          # the str.format bug back and the step does fail -- on pipefail, at
+          # the pipeline, before the grep is reached, with braces.txt holding
+          # zero occurrences of the string. The message below had never been
+          # printable, and the exit status was doing all the work.
+          stockbox run -c braces.toml > braces.txt 2> braces.err && s=0 || s=$?
+          cat braces.txt
+          cat braces.err >&2
+          # Before the status check, so the specific diagnosis wins over
+          # "exited 1" when it is the one that applies.
+          if grep -qF 'Traceback' braces.err; then
+            echo 'stockbox crashed substituting the awk program again' >&2
             exit 1
           fi
+          test "$s" -eq 0
           grep -qF 'floor of 5 verdicts: met' braces.txt
           grep -qE 'exercised [0-9]+ of 5 verdicts' braces.txt
+
+          # Control for the guard above, which it needs because nothing in a
+          # corpus can make a working stockbox crash -- that is what working
+          # means. A Python program that does crash, captured the same way,
+          # witnesses the two things the guard depends on: that an unhandled
+          # exception says `Traceback` on stderr, and that `2> file` is where
+          # this step would find it. It does not witness stockbox crashing;
+          # see the PR for why that one is not available.
+          python3 -c 'raise KeyError(" n++ ")' > control.txt 2> control.err && cs=0 || cs=$?
+          test "$cs" -ne 0
+          grep -qF 'Traceback' control.err
+          if grep -qF 'Traceback' control.txt; then
+            echo 'a crash reached stdout, so the guard is on the wrong stream' >&2
+            exit 1
+          fi
+
+          # And the inverse, which is the reason the guard reads stderr: a
+          # checker that crashes is reported, on stdout, as the broken input
+          # it is. The old spelling of this step would have called that a
+          # stockbox crash.
+          printf 'raise KeyError(" n++ ")\n' > crasher.py
+          sed "s|CRASHER|$PWD/crasher.py|" > checker.toml <<'TOML'
+          [[shape]]
+          name = "crashing-checker"
+          roots = ["/usr/lib/python3"]
+          names = ["*.json"]
+          command = ["python3", "CRASHER", "{path}"]
+          verdict = [0]
+          sample = 3
+          min_verdicts = 3
+          TOML
+          stockbox run -c checker.toml > checker.txt 2> checker.err && ks=0 || ks=$?
+          cat checker.txt
+          test "$ks" -eq 3
+          grep -qF 'Traceback' checker.txt
+          grep -qxF '3 inputs broke the checker. 0 verdicts across 1 shape.' checker.txt
+          if grep -qF 'Traceback' checker.err; then
+            echo "a checker's crash came out as stockbox's own" >&2
+            exit 1
+          fi
 
           # And a brace-wrapped word that looks like a placeholder and is not.
           sed 's/{path}/{pathh}/' braces.toml > typo.toml
