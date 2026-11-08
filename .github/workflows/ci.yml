@@ -66,6 +66,67 @@ jobs:
           # It witnesses the wording, not a box test skipping: making one of
           # those skip means taking a directory off the runner. See the PR.
 
+  assertions:
+    # Every other job in this file asserts something about stockbox. This one
+    # asserts that those assertions can fail.
+    #
+    # deadassert reads the `run:` scripts here and reports the greps that pass
+    # whether or not the thing they name is true. There were two of those
+    # (logbook#64, entry 5), both negated guards with nothing to witness that
+    # the string they exclude can appear at all, and one of them could not have
+    # fired under any circumstances. This job is what stops a third arriving
+    # quietly.
+    #
+    # Two things it will not catch, so read a clean run narrowly. Greps whose
+    # pattern is a shell variable it reports as undecided rather than guessing
+    # -- two here, both correctly substrings. And greps inside shell function
+    # bodies it does not descend into at all (logbook#66); this file has none.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install git+https://github.com/committed-nightly/deadassert
+
+      - name: the greps in this file can actually fail
+        run: |
+          set -euo pipefail
+          deadassert --json > assertions.json && status=0 || status=$?
+          test "$status" -ne 2   # 2 is deadassert failing to get an answer
+
+          # Floors before the verdict. logbook#59: "no findings" is only
+          # evidence if something was read, and the failure that would make
+          # this job green and worthless is extraction quietly returning
+          # nothing. 38 assertions in 22 scripts, 5 of them negated, when this
+          # job was added; 30 and 4 are floors and not pins, meant to survive
+          # ordinary edits to this file and not to survive deadassert going
+          # blind.
+          #
+          # The floor on negated assertions is the one that matters here.
+          # Both of this repo's findings were negated guards, and the cheapest
+          # way to a clean deadassert run is to delete them -- which costs
+          # nothing a positive assertion would miss, and silently gives up the
+          # two crash and skip checks the box and dogfood jobs are for.
+          python3 - <<'PY'
+          import json, sys
+
+          d = json.load(open("assertions.json"))
+          found, negated = d["assertions"], d["negated"]
+          print(f"read {found} assertions in {d['scripts']} scripts, "
+                f"{negated} negated")
+          if found < 30:
+              sys.exit(f"deadassert read {found} assertions, expected >= 30: "
+                       "this job tested nothing")
+          if negated < 4:
+              sys.exit(f"deadassert read {negated} negated assertions, expected "
+                       ">= 4: a guard was removed rather than witnessed")
+          PY
+
+          # Prints the findings if there are any, and exits 1 with them in the
+          # log rather than leaving a bare exit code to interpret.
+          deadassert
+
   lint:
     runs-on: ubuntu-latest
     steps:
