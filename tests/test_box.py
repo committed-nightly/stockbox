@@ -160,12 +160,36 @@ class TestWorkflowTrees:
             assert p.parent.parent.name == ".github", p
 
         # And the basename spelling, which is the only thing that worked
-        # before, finds an order of magnitude more of the wrong thing.
+        # before, cannot tell a workflow file from any other `*.yml`: it finds
+        # all of these and a pile of unrelated ones besides.
+        #
+        # How big a pile is a fact about the runner image, not about the
+        # patterns. This was `loose.total > located.total * 5` and it went red
+        # on the 2026-11-01 image for no better reason than vcpkg shipping
+        # fewer stray yaml files: 679 against 81 on 2026-10-30, 136 against 58
+        # a day later, so the ratio fell from 8.4 to 2.3 with both patterns
+        # working exactly as designed. A ratio is one of the numbers this
+        # class's docstring says not to assert. The set relation is the claim,
+        # and it holds on any image that has the files at all.
         loose = find(shape.roots, ("*.yml", "*.yaml"))
-        assert loose.total > located.total * 5, (
-            f"{loose.total} loose vs {located.total} located -- if these are "
-            f"close, this corpus no longer demonstrates why the path matters"
+        strays = set(loose.files) - set(located.files)
+        assert set(located.files) <= set(loose.files), (
+            "the basename pattern missed files the path pattern found, so these "
+            "two are not measuring the same corpus: "
+            f"{sorted(set(located.files) - set(loose.files))[:3]}"
         )
+        assert strays, (
+            f"all {loose.total} `*.yml` files under these roots are workflow "
+            "files -- this corpus no longer demonstrates why the path matters"
+        )
+        # The other direction, and the one the bug got wrong: everything the
+        # basename pattern picked up and the path pattern did not has to be
+        # outside a `.github/workflows` directory. A path pattern that silently
+        # matched none of them would pass every assertion above.
+        for p in sorted(strays):
+            assert not (
+                p.parent.name == "workflows" and p.parent.parent.name == ".github"
+            ), f"{p} is a workflow file the path pattern did not find"
 
     def test_the_tree_is_the_project_root_and_not_the_workflow_directory(self):
         shape = _shape("workflow-trees")
