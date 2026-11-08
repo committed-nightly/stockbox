@@ -203,16 +203,27 @@ jobs:
           print(f\"{s['candidates']} files, {s['trees']} trees, all {s['verdicts']} verdicts\")
           "
 
-          # The spelling that used to be the only one available finds an order
-          # of magnitude more of the wrong thing. This is the bug, measured.
+          # The spelling that used to be the only one available finds more of
+          # the wrong thing, and cannot say which trees any of it is in. This
+          # is the bug, measured.
+          #
+          # How much more is the image's business, which is what the comment
+          # four asserts up says and what this one used to get wrong: it read
+          # `loose > tight * 5` and went red on the 2026-11-01 image at 136
+          # against 58, both patterns working exactly as designed. Being a
+          # function of the two counts it also got easier to satisfy as the
+          # path pattern broke. The tree count is the claim that does not move.
           sed 's|".github/workflows/\*|"*|g' trees.toml > loose.toml
           stockbox roots -c loose.toml --json > loose.json
           python3 -c "
           import json
-          tight = json.load(open('trees.json'))['shapes'][0]['candidates']
-          loose = json.load(open('loose.json'))['shapes'][0]['candidates']
-          assert loose > tight * 5, (loose, tight)
-          print(f'{tight} workflow files among {loose} *.yml')
+          t = json.load(open('trees.json'))['shapes'][0]
+          lo = json.load(open('loose.json'))['shapes'][0]
+          tight, loose = t['candidates'], lo['candidates']
+          assert loose > tight, (loose, tight)
+          assert t['trees'] and lo['trees'] is None, (t['trees'], lo['trees'])
+          print(str(tight) + ' workflow files among ' + str(loose) + ' *.yml, in '
+                + str(t['trees']) + ' trees the basename pattern cannot express')
           "
 
       # Quoted: a plain scalar starting with `*` is a YAML alias, and the whole
