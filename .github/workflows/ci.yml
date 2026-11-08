@@ -77,10 +77,21 @@ jobs:
     # fired under any circumstances. This job is what stops a third arriving
     # quietly.
     #
-    # Two things it will not catch, so read a clean run narrowly. Greps whose
-    # pattern is a shell variable it reports as undecided rather than guessing
-    # -- two here, both correctly substrings. And greps inside shell function
-    # bodies it does not descend into at all (logbook#66); this file has none.
+    # Three things it will not catch, so read a clean run narrowly.
+    #
+    # Patterns it cannot evaluate it files as undecided rather than guessing,
+    # and there are two here. One is a shell variable -- the `for shape in`
+    # loop, correctly a substring. The other is the ``**` is not a wildcard
+    # here` message, which holds literal backticks inside single quotes: a
+    # literal and a lost command substitution look identical from outside, so
+    # undecided is the honest answer and not a gap to close.
+    #
+    # Greps inside shell function bodies it does not descend into at all
+    # (logbook#66); this file has none.
+    #
+    # And it reads greps, not asserts. The `loose > tight` comparison in the
+    # dogfood job is a Python assert and invisible to it -- that one was the
+    # same defect as a finding here and had to be found by running the step.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
