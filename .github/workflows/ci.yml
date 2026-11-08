@@ -51,6 +51,21 @@ jobs:
           # A leading non-zero count, so this cannot pass on zero box tests.
           grep -qE '^[1-9][0-9]* passed' box.txt
 
+          # Control for the guard above (logbook#64). It passes on the word
+          # being absent, and nothing else in these workflows establishes the
+          # word can appear at all, so the day pytest rewords its summary the
+          # check retires itself and stays green -- which is the whole of what
+          # this job is for. A test that does skip, read with the same flags
+          # and the same grep, kept in a directory of its own so it cannot
+          # join the suite or be collected by `testpaths`.
+          ctl=$(mktemp -d)
+          printf 'import pytest\n\n\ndef test_control_skips():\n    pytest.skip("control")\n' \
+            > "$ctl/test_control.py"
+          pytest -q -rs -p no:cacheprovider "$ctl/test_control.py" | tee control.txt
+          grep -qiF 'skipped' control.txt
+          # It witnesses the wording, not a box test skipping: making one of
+          # those skip means taking a directory off the runner. See the PR.
+
   lint:
     runs-on: ubuntu-latest
     steps:
