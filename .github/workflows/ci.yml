@@ -51,6 +51,93 @@ jobs:
           # A leading non-zero count, so this cannot pass on zero box tests.
           grep -qE '^[1-9][0-9]* passed' box.txt
 
+          # Control for the guard above (logbook#64). It passes on the word
+          # being absent, and nothing else in these workflows establishes the
+          # word can appear at all, so the day pytest rewords its summary the
+          # check retires itself and stays green -- which is the whole of what
+          # this job is for. A test that does skip, read with the same flags
+          # and the same grep, kept in a directory of its own so it cannot
+          # join the suite or be collected by `testpaths`.
+          ctl=$(mktemp -d)
+          printf 'import pytest\n\n\ndef test_control_skips():\n    pytest.skip("control")\n' \
+            > "$ctl/test_control.py"
+          pytest -q -rs -p no:cacheprovider "$ctl/test_control.py" | tee control.txt
+          grep -qiF 'skipped' control.txt
+          # It witnesses the wording, not a box test skipping: making one of
+          # those skip means taking a directory off the runner. See the PR.
+
+  assertions:
+    # Every other job in this file asserts something about stockbox. This one
+    # asserts that those assertions can fail.
+    #
+    # deadassert reads the `run:` scripts here and reports the greps that pass
+    # whether or not the thing they name is true. There were two of those
+    # (logbook#64, entry 5), both negated guards with nothing to witness that
+    # the string they exclude can appear at all, and one of them could not have
+    # fired under any circumstances. This job is what stops a third arriving
+    # quietly.
+    #
+    # Three things it will not catch, so read a clean run narrowly.
+    #
+    # Patterns it cannot evaluate it files as undecided rather than guessing,
+    # and there are two here. One is a shell variable -- the `for shape in`
+    # loop, correctly a substring. The other is the ``**` is not a wildcard
+    # here` message, which holds literal backticks inside single quotes: a
+    # literal and a lost command substitution look identical from outside, so
+    # undecided is the honest answer and not a gap to close.
+    #
+    # Greps inside shell function bodies it does not descend into at all
+    # (logbook#66); this file has none.
+    #
+    # And it reads greps, not asserts. The `loose > tight` comparison in the
+    # dogfood job is a Python assert and invisible to it -- that one was the
+    # same defect as a finding here and had to be found by running the step.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install git+https://github.com/committed-nightly/deadassert
+
+      - name: the greps in this file can actually fail
+        run: |
+          set -euo pipefail
+          deadassert --json > assertions.json && status=0 || status=$?
+          test "$status" -ne 2   # 2 is deadassert failing to get an answer
+
+          # Floors before the verdict. logbook#59: "no findings" is only
+          # evidence if something was read, and the failure that would make
+          # this job green and worthless is extraction quietly returning
+          # nothing. 38 assertions in 22 scripts, 5 of them negated, when this
+          # job was added; 30 and 4 are floors and not pins, meant to survive
+          # ordinary edits to this file and not to survive deadassert going
+          # blind.
+          #
+          # The floor on negated assertions is the one that matters here.
+          # Both of this repo's findings were negated guards, and the cheapest
+          # way to a clean deadassert run is to delete them -- which costs
+          # nothing a positive assertion would miss, and silently gives up the
+          # two crash and skip checks the box and dogfood jobs are for.
+          python3 - <<'PY'
+          import json, sys
+
+          d = json.load(open("assertions.json"))
+          found, negated = d["assertions"], d["negated"]
+          print(f"read {found} assertions in {d['scripts']} scripts, "
+                f"{negated} negated")
+          if found < 30:
+              sys.exit(f"deadassert read {found} assertions, expected >= 30: "
+                       "this job tested nothing")
+          if negated < 4:
+              sys.exit(f"deadassert read {negated} negated assertions, expected "
+                       ">= 4: a guard was removed rather than witnessed")
+          PY
+
+          # Prints the findings if there are any, and exits 1 with them in the
+          # log rather than leaving a bare exit code to interpret.
+          deadassert
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -127,16 +214,27 @@ jobs:
           print(f\"{s['candidates']} files, {s['trees']} trees, all {s['verdicts']} verdicts\")
           "
 
-          # The spelling that used to be the only one available finds an order
-          # of magnitude more of the wrong thing. This is the bug, measured.
+          # The spelling that used to be the only one available finds more of
+          # the wrong thing, and cannot say which trees any of it is in. This
+          # is the bug, measured.
+          #
+          # How much more is the image's business, which is what the comment
+          # four asserts up says and what this one used to get wrong: it read
+          # `loose > tight * 5` and went red on the 2026-11-01 image at 136
+          # against 58, both patterns working exactly as designed. Being a
+          # function of the two counts it also got easier to satisfy as the
+          # path pattern broke. The tree count is the claim that does not move.
           sed 's|".github/workflows/\*|"*|g' trees.toml > loose.toml
           stockbox roots -c loose.toml --json > loose.json
           python3 -c "
           import json
-          tight = json.load(open('trees.json'))['shapes'][0]['candidates']
-          loose = json.load(open('loose.json'))['shapes'][0]['candidates']
-          assert loose > tight * 5, (loose, tight)
-          print(f'{tight} workflow files among {loose} *.yml')
+          t = json.load(open('trees.json'))['shapes'][0]
+          lo = json.load(open('loose.json'))['shapes'][0]
+          tight, loose = t['candidates'], lo['candidates']
+          assert loose > tight, (loose, tight)
+          assert t['trees'] and lo['trees'] is None, (t['trees'], lo['trees'])
+          print(str(tight) + ' workflow files among ' + str(loose) + ' *.yml, in '
+                + str(t['trees']) + ' trees the basename pattern cannot express')
           "
 
       # Quoted: a plain scalar starting with `*` is a YAML alias, and the whole
@@ -253,13 +351,72 @@ jobs:
           min_verdicts = 5
           subject_pattern = '^([0-9]+) lines$'
           TOML
-          stockbox run -c braces.toml | tee braces.txt
-          if grep -qF 'Traceback' braces.txt; then
-            echo 'the awk program came back out as a traceback again' >&2
+          # The two streams are kept apart on purpose, because the crash this
+          # step is named after only ever appears on one of them. stockbox's
+          # own crash is an unhandled exception: Python writes `Traceback` to
+          # *stderr* and exits non-zero. A *checker's* crash is a `broken`
+          # result, and stockbox quotes the checker's first stderr line into
+          # the report on *stdout* -- so a `Traceback` on stdout is stockbox
+          # working, not stockbox failing. Both controls are below.
+          #
+          # This read `stockbox run -c braces.toml | tee braces.txt` and then
+          # grepped braces.txt, which could match neither (logbook#64). Put
+          # the str.format bug back and the step does fail -- on pipefail, at
+          # the pipeline, before the grep is reached, with braces.txt holding
+          # zero occurrences of the string. The message below had never been
+          # printable, and the exit status was doing all the work.
+          stockbox run -c braces.toml > braces.txt 2> braces.err && s=0 || s=$?
+          cat braces.txt
+          cat braces.err >&2
+          # Before the status check, so the specific diagnosis wins over
+          # "exited 1" when it is the one that applies.
+          if grep -qF 'Traceback' braces.err; then
+            echo 'stockbox crashed substituting the awk program again' >&2
             exit 1
           fi
+          test "$s" -eq 0
           grep -qF 'floor of 5 verdicts: met' braces.txt
           grep -qE 'exercised [0-9]+ of 5 verdicts' braces.txt
+
+          # Control for the guard above, which it needs because nothing in a
+          # corpus can make a working stockbox crash -- that is what working
+          # means. A Python program that does crash, captured the same way,
+          # witnesses the two things the guard depends on: that an unhandled
+          # exception says `Traceback` on stderr, and that `2> file` is where
+          # this step would find it. It does not witness stockbox crashing;
+          # see the PR for why that one is not available.
+          python3 -c 'raise KeyError(" n++ ")' > control.txt 2> control.err && cs=0 || cs=$?
+          test "$cs" -ne 0
+          grep -qF 'Traceback' control.err
+          if grep -qF 'Traceback' control.txt; then
+            echo 'a crash reached stdout, so the guard is on the wrong stream' >&2
+            exit 1
+          fi
+
+          # And the inverse, which is the reason the guard reads stderr: a
+          # checker that crashes is reported, on stdout, as the broken input
+          # it is. The old spelling of this step would have called that a
+          # stockbox crash.
+          printf 'raise KeyError(" n++ ")\n' > crasher.py
+          sed "s|CRASHER|$PWD/crasher.py|" > checker.toml <<'TOML'
+          [[shape]]
+          name = "crashing-checker"
+          roots = ["/usr/lib/python3"]
+          names = ["*.json"]
+          command = ["python3", "CRASHER", "{path}"]
+          verdict = [0]
+          sample = 3
+          min_verdicts = 3
+          TOML
+          stockbox run -c checker.toml > checker.txt 2> checker.err && ks=0 || ks=$?
+          cat checker.txt
+          test "$ks" -eq 3
+          grep -qF 'Traceback' checker.txt
+          grep -qxF '3 inputs broke the checker. 0 verdicts across 1 shape.' checker.txt
+          if grep -qF 'Traceback' checker.err; then
+            echo "a checker's crash came out as stockbox's own" >&2
+            exit 1
+          fi
 
           # And a brace-wrapped word that looks like a placeholder and is not.
           sed 's/{path}/{pathh}/' braces.toml > typo.toml

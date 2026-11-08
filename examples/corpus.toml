@@ -60,9 +60,13 @@ name = "workflow-trees"
 # files, against 679 files called `*.yml` or `*.yaml`. The only thing that
 # tells the 81 from the other 598 is the `.github/workflows/` above them,
 # which is why `names` matches path components and not just the filename.
-# Both patterns below are counted in that 679, so the comparison is the one
-# this shape actually makes; `tests/test_box.py` asserts the ratio rather
-# than either number, so the image can move without this file lying.
+#
+# Both numbers moved on the next image (58 against 136) and will move again.
+# `tests/test_box.py` asserts neither them nor the ratio between them -- the
+# ratio is as much a fact about the image as the counts are, and asserting it
+# cost a red `box` job on 2026-11-01. What it asserts is that the basename
+# pattern finds everything this one does and strays besides, which is the
+# whole of the claim and survives the image moving.
 #
 # The julia stdlib has 39 more, under `/usr/local/julia1.13.2/share`. Left out
 # on purpose: a version-numbered root is a root that rots, and a root that is
@@ -78,9 +82,10 @@ roots = [
 names = [".github/workflows/*.yml", ".github/workflows/*.yaml"]
 # `{tree}` is the directory the pattern started matching at -- the project root
 # above `.github`, which is what a checker that takes a repository wants. The
-# 81 files are in 30 trees, so 51 of them build a command line another input
-# already built and are not run twice: 30 inputs, not 81. `stockbox run` says
-# so in its second line.
+# 2026-10-30 image's 81 files were in 30 trees, so 51 of them build a command
+# line another input already built and are not run twice: 30 inputs, not 81.
+# (On 2026-11-01 it is 58 in 15.) `stockbox run` says so in its second line,
+# whatever the day's numbers are.
 #
 # A stand-in, again, for a checker that reports its own denominator: this one
 # counts the reused actions across every workflow in the tree. `sh -c` is here
